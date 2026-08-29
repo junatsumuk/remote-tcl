@@ -4,11 +4,15 @@ import android.content.Context
 import android.util.Base64
 import android.util.Log
 import org.bouncycastle.asn1.x500.X500Name
+import org.bouncycastle.asn1.x509.BasicConstraints
+import org.bouncycastle.asn1.x509.ExtendedKeyUsage
+import org.bouncycastle.asn1.x509.Extension
+import org.bouncycastle.asn1.x509.KeyPurposeId
+import org.bouncycastle.asn1.x509.KeyUsage
 import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter
 import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder
 import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
 import java.io.ByteArrayInputStream
-import java.io.ByteArrayOutputStream
 import java.math.BigInteger
 import java.security.KeyPair
 import java.security.KeyPairGenerator
@@ -17,7 +21,6 @@ import java.security.SecureRandom
 import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
 import java.util.Date
-import javax.net.ssl.KeyManager
 import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
 import javax.net.ssl.TrustManager
@@ -26,7 +29,7 @@ import javax.net.ssl.X509TrustManager
 class KeyStoreHelper(private val context: Context) {
 
     private val TAG = "KeyStoreHelper"
-    private val PREFS_NAME = "tcl_keystore_prefs"
+    private val PREFS_NAME = "tcl_keystore_prefs_v2"
     private val KEY_CERT = "client_cert"
     private val KEY_PRIV = "client_priv_key"
     private val KEY_STORE_PASSWORD = "remote_tcl_password".toCharArray()
@@ -99,16 +102,17 @@ class KeyStoreHelper(private val context: Context) {
             .putString(KEY_PRIV, Base64.encodeToString(keyPair.private.encoded, Base64.NO_WRAP))
             .apply()
 
-        Log.d(TAG, "Generated and saved new client certificate")
+        Log.d(TAG, "Generated and saved new client certificate with X509v3 extensions")
         return keyStore
     }
 
     private fun generateSelfSignedCertificate(keyPair: KeyPair): X509Certificate {
         val now = System.currentTimeMillis()
         val startDate = Date(now - 86400000L) // Yesterday
-        val endDate = Date(now + 10L * 365 * 86400000L) // 10 years
+        val endDate = Date(now + 15L * 365 * 86400000L) // 15 years
 
-        val dnName = X500Name("CN=Remote TCL, O=DailyTool, C=US")
+        // Google TV Remote v2 expects CN=atvremote or similar
+        val dnName = X500Name("CN=atvremote, O=Google, C=US")
         val serialNumber = BigInteger.valueOf(now)
 
         val contentSigner = JcaContentSignerBuilder("SHA256WithRSA").build(keyPair.private)
@@ -119,6 +123,23 @@ class KeyStoreHelper(private val context: Context) {
             endDate,
             dnName,
             keyPair.public
+        )
+
+        // Essential X.509 extensions for Android TV SSL Client Authentication
+        certBuilder.addExtension(
+            Extension.basicConstraints,
+            true,
+            BasicConstraints(false)
+        )
+        certBuilder.addExtension(
+            Extension.keyUsage,
+            true,
+            KeyUsage(KeyUsage.digitalSignature or KeyUsage.keyEncipherment or KeyUsage.dataEncipherment)
+        )
+        certBuilder.addExtension(
+            Extension.extendedKeyUsage,
+            false,
+            ExtendedKeyUsage(arrayOf(KeyPurposeId.id_kp_clientAuth, KeyPurposeId.id_kp_serverAuth))
         )
 
         return JcaX509CertificateConverter().getCertificate(certBuilder.build(contentSigner))

@@ -1,6 +1,8 @@
 package com.dailytool.remotetcl
 
 import android.app.Dialog
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.os.Build
 import android.os.Bundle
@@ -330,9 +332,10 @@ class MainActivity : AppCompatActivity() {
     private fun showPinPairingDialog(device: TvDevice) {
         lifecycleScope.launch {
             Toast.makeText(this@MainActivity, "Meminta kode PIN ke TV...", Toast.LENGTH_SHORT).show()
-            val pairingStarted = remoteManager.androidTvProtocol.startPairing(device)
-            if (!pairingStarted) {
-                // If pairing protocol failed, test if T-Cast or direct HTTP commands work
+            val result = remoteManager.androidTvProtocol.startPairing(device)
+
+            if (!result.success) {
+                // Test if T-Cast or direct HTTP commands work as fallback
                 val tcastWorks = remoteManager.tclCastProtocol.sendKey(device, TvKey.VOLUME_UP)
                 if (tcastWorks) {
                     remoteManager.saveDevice(device)
@@ -342,7 +345,7 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 updateUiDisconnected()
-                Toast.makeText(this@MainActivity, "Gagal memulai pairing. Pastikan TV dalam keadaan ON.", Toast.LENGTH_LONG).show()
+                showDiagnosticDialog(result.diagnosticLog)
                 return@launch
             }
 
@@ -384,6 +387,30 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun showDiagnosticDialog(diagnosticLog: String) {
+        val dialog = Dialog(this)
+        dialog.setContentView(R.layout.dialog_diagnostic)
+        dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
+
+        val tvLog = dialog.findViewById<TextView>(R.id.tv_diag_log)
+        val btnCopy = dialog.findViewById<Button>(R.id.btn_diag_copy)
+        val btnClose = dialog.findViewById<Button>(R.id.btn_diag_close)
+
+        tvLog.text = diagnosticLog
+
+        btnCopy.setOnClickListener {
+            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            val clip = ClipData.newPlainText("TV Connection Diagnostics", diagnosticLog)
+            clipboard.setPrimaryClip(clip)
+            Toast.makeText(this, "Log diagnosa berhasil disalin ke clipboard!", Toast.LENGTH_SHORT).show()
+        }
+
+        btnClose.setOnClickListener { dialog.dismiss() }
+
+        dialog.show()
+        applyDialogSize(dialog)
+    }
+
     private fun showManualIpDialog() {
         val dialog = Dialog(this)
         dialog.setContentView(R.layout.dialog_manual_ip)
@@ -412,7 +439,7 @@ class MainActivity : AppCompatActivity() {
             val manualDevice = TvDevice(
                 name = "TCL TV ($ip)",
                 ipAddress = ip,
-                port = if (tvType == TvType.ROKU_TV) 8060 else 6466,
+                port = if (tvType == TvType.ROKU_TV) 8060 else 6467,
                 type = tvType
             )
 

@@ -2,6 +2,7 @@ package com.dailytool.remotetcl.protocol
 
 import android.content.Context
 import android.util.Log
+import com.dailytool.remotetcl.model.PairingResult
 import com.dailytool.remotetcl.model.TvDevice
 import com.dailytool.remotetcl.model.TvKey
 import kotlinx.coroutines.Dispatchers
@@ -11,7 +12,10 @@ import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
+import java.io.PrintWriter
+import java.io.StringWriter
 import java.net.InetSocketAddress
+import java.net.Socket
 import java.security.MessageDigest
 import java.security.cert.X509Certificate
 import javax.net.ssl.SSLSocket
@@ -91,53 +95,96 @@ class AndroidTvProtocol(private val context: Context) {
         const val KEYCODE_VOLUME_MUTE = 164
     }
 
-    suspend fun startPairing(device: TvDevice): Boolean = withContext(Dispatchers.IO) {
+    suspend fun startPairing(device: TvDevice): PairingResult = withContext(Dispatchers.IO) {
+        val log = StringBuilder()
+        val targetIp = device.ipAddress
+        log.append("Target IP: $targetIp\n")
+
+        // 1. Check open ports on target TV
+        val testPorts = listOf(6467, 6466, 8060, 4123, 7983, 5555, 8008)
+        val openPorts = mutableListOf<Int>()
+        for (p in testPorts) {
+            try {
+                Socket().use { s ->
+                    s.connect(InetSocketAddress(targetIp, p), 300)
+                    openPorts.add(p)
+                }
+            } catch (_: Exception) {}
+        }
+        log.append("Port Terbuka di TV: ${if (openPorts.isEmpty()) "Tidak ada (TV offline/firewall)" else openPorts.joinToString(", ")}\n")
+
         try {
             disconnect()
+            log.append("Membuat TLS Context & Client Certificate...\n")
             val sslContext = keyStoreHelper.getSslContext()
             val socket = sslContext.socketFactory.createSocket() as SSLSocket
             socket.soTimeout = 10000
             socket.useClientMode = true
-            socket.connect(InetSocketAddress(device.ipAddress, 6467), 6000)
+
+            log.append("Menghubungkan Socket TLS ke $targetIp:6467...\n")
+            socket.connect(InetSocketAddress(targetIp, 6467), 6000)
+
+            log.append("Melakukan TLS Handshake...\n")
             socket.startHandshake()
+            log.append("TLS Handshake Sukses! Cipher: ${socket.session.cipherSuite}\n")
 
             pairingSocket = socket
 
             val certs = socket.session.peerCertificates
             if (certs.isNotEmpty() && certs[0] is X509Certificate) {
                 serverCert = certs[0] as X509Certificate
+                log.append("Sertifikat TV: ${serverCert?.subjectDN}\n")
             }
 
             val out = socket.outputStream
             val input = socket.inputStream
 
-            // 1. PairingRequest
+            // Step 1: Send PairingRequest
+            log.append("Mengirim PairingRequest (v2)...\n")
             val pairingReq = buildPairingRequestPacket()
             sendPacket(out, pairingReq)
             val ack1 = readPacket(input)
-            Log.d(TAG, "PairingRequestAck received, bytes: ${ack1.size}")
+            log.append("Menerima PairingRequestAck (${ack1.size} bytes)\n")
 
-            // 2. PairingOption
+            // Step 2: Send PairingOption
+            log.append("Mengirim PairingOption (HEX 6 chars)...\n")
             val pairingOption = buildPairingOptionPacket()
             sendPacket(out, pairingOption)
             val ack2 = readPacket(input)
-            Log.d(TAG, "PairingOptionAck received, bytes: ${ack2.size}")
+            log.append("Menerima PairingOptionAck (${ack2.size} bytes)\n")
 
-            // 3. PairingConfiguration
+            // Step 3: Send PairingConfiguration
+            log.append("Mengirim PairingConfiguration...\n")
             val pairingConfig = buildPairingConfigurationPacket()
             sendPacket(out, pairingConfig)
             val ack3 = readPacket(input)
-            Log.d(TAG, "PairingConfigAck received, bytes: ${ack3.size}")
+            log.append("Menerima PairingConfigurationAck (${ack3.size} bytes)\n")
 
-            Log.d(TAG, "Pairing request successfully negotiated. PIN should now appear on TV.")
-            return@withContext true
+            log.append("Kode PIN berhasil diminta ke TV!\n")
+            return@withContext PairingResult(
+                success = true,
+                message = "Berhasil meminta PIN",
+                diagnosticLog = log.toString(),
+                openPorts = openPorts
+            )
         } catch (e: Exception) {
-            Log.e(TAG, "startPairing failed on ${device.ipAddress}: ${e.message}", e)
+            val sw = StringWriter()
+            e.printStackTrace(PrintWriter(sw))
+            log.append("\n[ERROR TERJADI]\n${e.javaClass.simpleName}: ${e.message}\n")
+            log.append("Stacktrace:\n$sw\n")
+            Log.e(TAG, "Pairing error: $log")
+
             try {
                 pairingSocket?.close()
             } catch (_: Exception) {}
             pairingSocket = null
-            return@withContext false
+
+            return@withContext PairingResult(
+                success = false,
+                message = "${e.javaClass.simpleName}: ${e.message ?: "Koneksi gagal"}",
+                diagnosticLog = log.toString(),
+                openPorts = openPorts
+            )
         }
     }
 
@@ -151,7 +198,6 @@ class AndroidTvProtocol(private val context: Context) {
             val clientCert = keyStoreHelper.clientCertificate
             val sCert = serverCert
 
-            // Calculate PIN bytes (try hex decoded if hex string, otherwise ASCII)
             val pinBytes = try {
                 if (cleanPin.length % 2 == 0 && cleanPin.matches(Regex("^[0-9a-fA-F]+$"))) {
                     cleanPin.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
