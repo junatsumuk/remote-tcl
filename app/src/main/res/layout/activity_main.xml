@@ -1,0 +1,505 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/bg_dark"
+    android:fillViewport="true">
+
+    <androidx.constraintlayout.widget.ConstraintLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:padding="20dp">
+
+        <!-- Top Header: TV Connection Status & Power Button -->
+        <LinearLayout
+            android:id="@+id/layout_tv_header"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginEnd="16dp"
+            android:background="@drawable/bg_card"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingHorizontal="16dp"
+            android:paddingVertical="12dp"
+            app:layout_constraintEnd_toStartOf="@id/btn_power"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toTopOf="parent">
+
+            <View
+                android:id="@+id/view_status_indicator"
+                android:layout_width="10dp"
+                android:layout_height="10dp"
+                android:layout_marginEnd="10dp"
+                android:background="@drawable/bg_badge_disconnected" />
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    android:id="@+id/tv_device_name"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Pilih TV TCL"
+                    android:textColor="@color/text_primary"
+                    android:textSize="15sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/tv_device_status"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/status_disconnected"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="12sp" />
+            </LinearLayout>
+
+            <ImageView
+                android:layout_width="20dp"
+                android:layout_height="20dp"
+                android:src="@drawable/ic_wifi"
+                app:tint="@color/text_secondary" />
+        </LinearLayout>
+
+        <!-- Power Button -->
+        <FrameLayout
+            android:id="@+id/btn_power"
+            android:layout_width="52dp"
+            android:layout_height="52dp"
+            android:background="@drawable/bg_power_button"
+            android:clickable="true"
+            android:focusable="true"
+            app:layout_constraintBottom_toBottomOf="@id/layout_tv_header"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintTop_toTopOf="@id/layout_tv_header">
+
+            <ImageView
+                android:layout_width="26dp"
+                android:layout_height="26dp"
+                android:layout_gravity="center"
+                android:src="@drawable/ic_power" />
+        </FrameLayout>
+
+        <!-- Top Navigation Row: BACK, HOME, MENU -->
+        <LinearLayout
+            android:id="@+id/layout_top_nav"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:gravity="center"
+            android:orientation="horizontal"
+            app:layout_constraintTop_toBottomOf="@id/layout_tv_header">
+
+            <FrameLayout
+                android:id="@+id/btn_back"
+                android:layout_width="60dp"
+                android:layout_height="52dp"
+                android:layout_marginHorizontal="12dp"
+                android:background="@drawable/bg_remote_button"
+                android:clickable="true"
+                android:focusable="true">
+
+                <ImageView
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:layout_gravity="center"
+                    android:src="@drawable/ic_back"
+                    app:tint="@color/text_primary" />
+            </FrameLayout>
+
+            <FrameLayout
+                android:id="@+id/btn_home"
+                android:layout_width="72dp"
+                android:layout_height="52dp"
+                android:layout_marginHorizontal="12dp"
+                android:background="@drawable/bg_remote_button"
+                android:clickable="true"
+                android:focusable="true">
+
+                <ImageView
+                    android:layout_width="26dp"
+                    android:layout_height="26dp"
+                    android:layout_gravity="center"
+                    android:src="@drawable/ic_home"
+                    app:tint="@color/text_primary" />
+            </FrameLayout>
+
+            <FrameLayout
+                android:id="@+id/btn_menu"
+                android:layout_width="60dp"
+                android:layout_height="52dp"
+                android:layout_marginHorizontal="12dp"
+                android:background="@drawable/bg_remote_button"
+                android:clickable="true"
+                android:focusable="true">
+
+                <ImageView
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:layout_gravity="center"
+                    android:src="@drawable/ic_menu"
+                    app:tint="@color/text_primary" />
+            </FrameLayout>
+        </LinearLayout>
+
+        <!-- D-PAD Navigation Controls -->
+        <androidx.constraintlayout.widget.ConstraintLayout
+            android:id="@+id/layout_dpad"
+            android:layout_width="250dp"
+            android:layout_height="250dp"
+            android:layout_marginTop="28dp"
+            android:background="@drawable/bg_dpad"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@id/layout_top_nav">
+
+            <!-- DPAD UP -->
+            <FrameLayout
+                android:id="@+id/btn_dpad_up"
+                android:layout_width="76dp"
+                android:layout_height="64dp"
+                android:clickable="true"
+                android:focusable="true"
+                app:layout_constraintEnd_toEndOf="parent"
+                app:layout_constraintStart_toStartOf="parent"
+                app:layout_constraintTop_toTopOf="parent">
+
+                <ImageView
+                    android:layout_width="32dp"
+                    android:layout_height="32dp"
+                    android:layout_gravity="center"
+                    android:src="@drawable/ic_arrow_up"
+                    app:tint="@color/text_primary" />
+            </FrameLayout>
+
+            <!-- DPAD DOWN -->
+            <FrameLayout
+                android:id="@+id/btn_dpad_down"
+                android:layout_width="76dp"
+                android:layout_height="64dp"
+                android:clickable="true"
+                android:focusable="true"
+                app:layout_constraintBottom_toBottomOf="parent"
+                app:layout_constraintEnd_toEndOf="parent"
+                app:layout_constraintStart_toStartOf="parent">
+
+                <ImageView
+                    android:layout_width="32dp"
+                    android:layout_height="32dp"
+                    android:layout_gravity="center"
+                    android:src="@drawable/ic_arrow_down"
+                    app:tint="@color/text_primary" />
+            </FrameLayout>
+
+            <!-- DPAD LEFT -->
+            <FrameLayout
+                android:id="@+id/btn_dpad_left"
+                android:layout_width="64dp"
+                android:layout_height="76dp"
+                android:clickable="true"
+                android:focusable="true"
+                app:layout_constraintBottom_toBottomOf="parent"
+                app:layout_constraintStart_toStartOf="parent"
+                app:layout_constraintTop_toTopOf="parent">
+
+                <ImageView
+                    android:layout_width="32dp"
+                    android:layout_height="32dp"
+                    android:layout_gravity="center"
+                    android:src="@drawable/ic_arrow_left"
+                    app:tint="@color/text_primary" />
+            </FrameLayout>
+
+            <!-- DPAD RIGHT -->
+            <FrameLayout
+                android:id="@+id/btn_dpad_right"
+                android:layout_width="64dp"
+                android:layout_height="76dp"
+                android:clickable="true"
+                android:focusable="true"
+                app:layout_constraintBottom_toBottomOf="parent"
+                app:layout_constraintEnd_toEndOf="parent"
+                app:layout_constraintTop_toTopOf="parent">
+
+                <ImageView
+                    android:layout_width="32dp"
+                    android:layout_height="32dp"
+                    android:layout_gravity="center"
+                    android:src="@drawable/ic_arrow_right"
+                    app:tint="@color/text_primary" />
+            </FrameLayout>
+
+            <!-- DPAD CENTER (OK BUTTON) -->
+            <FrameLayout
+                android:id="@+id/btn_dpad_ok"
+                android:layout_width="88dp"
+                android:layout_height="88dp"
+                android:background="@drawable/bg_dpad_center"
+                android:clickable="true"
+                android:focusable="true"
+                app:layout_constraintBottom_toBottomOf="parent"
+                app:layout_constraintEnd_toEndOf="parent"
+                app:layout_constraintStart_toStartOf="parent"
+                app:layout_constraintTop_toTopOf="parent">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:text="OK"
+                    android:textColor="@color/text_primary"
+                    android:textSize="18sp"
+                    android:textStyle="bold" />
+            </FrameLayout>
+        </androidx.constraintlayout.widget.ConstraintLayout>
+
+        <!-- Volume, Channel, Mute, Play/Pause Row -->
+        <LinearLayout
+            android:id="@+id/layout_controls_row"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="28dp"
+            android:gravity="center"
+            android:orientation="horizontal"
+            app:layout_constraintTop_toBottomOf="@id/layout_dpad">
+
+            <!-- Volume Control Vertical Capsule -->
+            <LinearLayout
+                android:layout_width="68dp"
+                android:layout_height="140dp"
+                android:layout_marginHorizontal="12dp"
+                android:background="@drawable/bg_card"
+                android:gravity="center"
+                android:orientation="vertical">
+
+                <FrameLayout
+                    android:id="@+id/btn_vol_up"
+                    android:layout_width="match_parent"
+                    android:layout_height="0dp"
+                    android:layout_weight="1"
+                    android:clickable="true"
+                    android:focusable="true">
+
+                    <ImageView
+                        android:layout_width="24dp"
+                        android:layout_height="24dp"
+                        android:layout_gravity="center"
+                        android:src="@drawable/ic_volume_up"
+                        app:tint="@color/text_primary" />
+                </FrameLayout>
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="VOL"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="11sp"
+                    android:textStyle="bold" />
+
+                <FrameLayout
+                    android:id="@+id/btn_vol_down"
+                    android:layout_width="match_parent"
+                    android:layout_height="0dp"
+                    android:layout_weight="1"
+                    android:clickable="true"
+                    android:focusable="true">
+
+                    <ImageView
+                        android:layout_width="24dp"
+                        android:layout_height="24dp"
+                        android:layout_gravity="center"
+                        android:src="@drawable/ic_volume_down"
+                        app:tint="@color/text_primary" />
+                </FrameLayout>
+            </LinearLayout>
+
+            <!-- Center Action Buttons (Mute & Play/Pause) -->
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="140dp"
+                android:layout_marginHorizontal="8dp"
+                android:gravity="center"
+                android:orientation="vertical">
+
+                <FrameLayout
+                    android:id="@+id/btn_mute"
+                    android:layout_width="56dp"
+                    android:layout_height="56dp"
+                    android:layout_marginBottom="12dp"
+                    android:background="@drawable/bg_remote_button"
+                    android:clickable="true"
+                    android:focusable="true">
+
+                    <ImageView
+                        android:layout_width="24dp"
+                        android:layout_height="24dp"
+                        android:layout_gravity="center"
+                        android:src="@drawable/ic_mute"
+                        app:tint="@color/text_primary" />
+                </FrameLayout>
+
+                <FrameLayout
+                    android:id="@+id/btn_play_pause"
+                    android:layout_width="56dp"
+                    android:layout_height="56dp"
+                    android:background="@drawable/bg_remote_button"
+                    android:clickable="true"
+                    android:focusable="true">
+
+                    <ImageView
+                        android:layout_width="24dp"
+                        android:layout_height="24dp"
+                        android:layout_gravity="center"
+                        android:src="@drawable/ic_play_pause"
+                        app:tint="@color/text_primary" />
+                </FrameLayout>
+            </LinearLayout>
+
+            <!-- Channel Control Vertical Capsule -->
+            <LinearLayout
+                android:layout_width="68dp"
+                android:layout_height="140dp"
+                android:layout_marginHorizontal="12dp"
+                android:background="@drawable/bg_card"
+                android:gravity="center"
+                android:orientation="vertical">
+
+                <FrameLayout
+                    android:id="@+id/btn_ch_up"
+                    android:layout_width="match_parent"
+                    android:layout_height="0dp"
+                    android:layout_weight="1"
+                    android:clickable="true"
+                    android:focusable="true">
+
+                    <ImageView
+                        android:layout_width="24dp"
+                        android:layout_height="24dp"
+                        android:layout_gravity="center"
+                        android:src="@drawable/ic_arrow_up"
+                        app:tint="@color/text_primary" />
+                </FrameLayout>
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="CH"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="11sp"
+                    android:textStyle="bold" />
+
+                <FrameLayout
+                    android:id="@+id/btn_ch_down"
+                    android:layout_width="match_parent"
+                    android:layout_height="0dp"
+                    android:layout_weight="1"
+                    android:clickable="true"
+                    android:focusable="true">
+
+                    <ImageView
+                        android:layout_width="24dp"
+                        android:layout_height="24dp"
+                        android:layout_gravity="center"
+                        android:src="@drawable/ic_arrow_down"
+                        app:tint="@color/text_primary" />
+                </FrameLayout>
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- Quick Streaming App Shortcuts -->
+        <LinearLayout
+            android:id="@+id/layout_app_shortcuts"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="28dp"
+            android:gravity="center"
+            android:orientation="horizontal"
+            app:layout_constraintTop_toBottomOf="@id/layout_controls_row">
+
+            <TextView
+                android:id="@+id/btn_netflix"
+                android:layout_width="0dp"
+                android:layout_height="48dp"
+                android:layout_marginHorizontal="6dp"
+                android:layout_weight="1"
+                android:background="@drawable/bg_pill_button"
+                android:clickable="true"
+                android:focusable="true"
+                android:gravity="center"
+                android:text="NETFLIX"
+                android:textColor="@color/accent_red"
+                android:textSize="13sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/btn_youtube"
+                android:layout_width="0dp"
+                android:layout_height="48dp"
+                android:layout_marginHorizontal="6dp"
+                android:layout_weight="1"
+                android:background="@drawable/bg_pill_button"
+                android:clickable="true"
+                android:focusable="true"
+                android:gravity="center"
+                android:text="YouTube"
+                android:textColor="@color/text_primary"
+                android:textSize="13sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/btn_prime"
+                android:layout_width="0dp"
+                android:layout_height="48dp"
+                android:layout_marginHorizontal="6dp"
+                android:layout_weight="1"
+                android:background="@drawable/bg_pill_button"
+                android:clickable="true"
+                android:focusable="true"
+                android:gravity="center"
+                android:text="Prime"
+                android:textColor="@color/accent_blue"
+                android:textSize="13sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <!-- Bottom Actions: Scan TV & Manual IP -->
+        <LinearLayout
+            android:id="@+id/layout_bottom_actions"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:layout_marginBottom="16dp"
+            android:gravity="center"
+            android:orientation="horizontal"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintTop_toBottomOf="@id/layout_app_shortcuts">
+
+            <Button
+                android:id="@+id/btn_scan_tv"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginEnd="8dp"
+                android:layout_weight="1"
+                android:text="Scan TV"
+                android:textColor="@color/text_primary" />
+
+            <Button
+                android:id="@+id/btn_manual_ip"
+                style="@style/Widget.Material3.Button.OutlinedButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:layout_weight="1"
+                android:text="Input IP"
+                android:textColor="@color/text_secondary" />
+        </LinearLayout>
+
+    </androidx.constraintlayout.widget.ConstraintLayout>
+</ScrollView>

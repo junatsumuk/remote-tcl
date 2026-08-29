@@ -1,0 +1,20 @@
+<resources>
+    <string name="app_name">Remote TCL</string>
+    <string name="title_remote">TCL Smart Remote</string>
+    <string name="status_disconnected">Belum Terhubung</string>
+    <string name="status_connected">Terhubung ke %s</string>
+    <string name="status_searching">Mencari TV di Wi-Fi...</string>
+    <string name="btn_select_tv">Pilih TV</string>
+    <string name="btn_manual_ip">Input IP Manual</string>
+    <string name="btn_scan">Scan Ulang</string>
+    <string name="dialog_scan_title">Pilih TV TCL</string>
+    <string name="no_tv_found">Tidak ada TV ditemukan di Wi-Fi.\nPastikan TV &amp; HP berada di Wi-Fi yang sama.</string>
+    <string name="dialog_ip_title">Hubungkan via IP Address</string>
+    <string name="dialog_ip_hint">Contoh: 192.168.1.50</string>
+    <string name="connect">Hubungkan</string>
+    <string name="cancel">Batal</string>
+    <string name="pair_pin_title">Verifikasi PIN TV</string>
+    <string name="pair_pin_desc">Masukkan kode PIN yang muncul di layar TV Anda:</string>
+    <string name="pair_pin_hint">PIN (4-6 Angka)</string>
+    <string name="pair_confirm">Verifikasi</string>
+</resources>
