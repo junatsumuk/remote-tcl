@@ -95,6 +95,10 @@ class AndroidTvProtocol(private val context: Context) {
         const val KEYCODE_VOLUME_MUTE = 164
     }
 
+    private fun bytesToHex(bytes: ByteArray): String {
+        return bytes.joinToString(" ") { "%02X".format(it) }
+    }
+
     suspend fun startPairing(device: TvDevice): PairingResult = withContext(Dispatchers.IO) {
         val log = StringBuilder()
         val targetIp = device.ipAddress
@@ -118,7 +122,7 @@ class AndroidTvProtocol(private val context: Context) {
             log.append("Membuat TLS Context & Client Certificate...\n")
             val sslContext = keyStoreHelper.getSslContext()
             val socket = sslContext.socketFactory.createSocket() as SSLSocket
-            socket.soTimeout = 12000
+            socket.soTimeout = 8000
             socket.useClientMode = true
 
             log.append("Menghubungkan Socket TLS ke $targetIp:6467...\n")
@@ -144,21 +148,27 @@ class AndroidTvProtocol(private val context: Context) {
             val pairingReq = buildPairingRequestPacket()
             sendPacket(out, pairingReq)
             val ack1 = readPacket(input)
-            log.append("Menerima PairingRequestAck (${ack1.size} bytes)\n")
+            log.append("Menerima PairingRequestAck (${ack1.size} bytes: ${bytesToHex(ack1)})\n")
 
-            // Step 2: Send PairingOption with EncodingType=3 (HEXADECIMAL)
-            log.append("Mengirim PairingOption (HEXADECIMAL 6 chars)...\n")
-            val pairingOption = buildPairingOptionPacket()
-            sendPacket(out, pairingOption)
-            val ack2 = readPacket(input)
-            log.append("Menerima PairingOptionAck (${ack2.size} bytes)\n")
+            // Step 2: Send PairingOption (Exact Google TV single HEXADECIMAL encoding)
+            var optionAckSuccess = false
+            try {
+                log.append("Mengirim PairingOption (HEXADECIMAL 6 chars)...\n")
+                val pairingOption = buildPairingOptionPacket()
+                sendPacket(out, pairingOption)
+                val ack2 = readPacket(input)
+                log.append("Menerima PairingOptionAck (${ack2.size} bytes: ${bytesToHex(ack2)})\n")
+                optionAckSuccess = true
+            } catch (e: Exception) {
+                log.append("PairingOption timeout, mencoba langsung PairingConfiguration...\n")
+            }
 
             // Step 3: Send PairingConfiguration
             log.append("Mengirim PairingConfiguration...\n")
             val pairingConfig = buildPairingConfigurationPacket()
             sendPacket(out, pairingConfig)
             val ack3 = readPacket(input)
-            log.append("Menerima PairingConfigurationAck (${ack3.size} bytes)\n")
+            log.append("Menerima PairingConfigurationAck (${ack3.size} bytes: ${bytesToHex(ack3)})\n")
 
             log.append("Sukses! Kode PIN sekarang muncul di layar TV.\n")
             return@withContext PairingResult(
@@ -194,20 +204,22 @@ class AndroidTvProtocol(private val context: Context) {
             val out = socket.outputStream
             val input = socket.inputStream
 
-            val cleanPin = pin.trim()
+            val cleanPin = pin.trim().uppercase()
             val clientCert = keyStoreHelper.clientCertificate
             val sCert = serverCert
 
+            // Parse hex PIN (e.g. "9F4E12" -> 3 bytes)
             val pinBytes = try {
-                if (cleanPin.length % 2 == 0 && cleanPin.matches(Regex("^[0-9a-fA-F]+$"))) {
+                if (cleanPin.length % 2 == 0 && cleanPin.matches(Regex("^[0-9A-F]+$"))) {
                     cleanPin.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
                 } else {
-                    cleanPin.uppercase().toByteArray(Charsets.UTF_8)
+                    cleanPin.toByteArray(Charsets.UTF_8)
                 }
             } catch (_: Exception) {
                 cleanPin.toByteArray(Charsets.UTF_8)
             }
 
+            // Calculate secret hash: SHA-256(client_cert_der + server_cert_der + pin_bytes)
             val secretHash = if (clientCert != null && sCert != null) {
                 val md = MessageDigest.getInstance("SHA-256")
                 md.update(clientCert.encoded)
@@ -226,7 +238,7 @@ class AndroidTvProtocol(private val context: Context) {
             socket.close()
             pairingSocket = null
 
-            Log.d(TAG, "Pairing verification completed with response length: ${response.size}")
+            Log.d(TAG, "Pairing verification completed with response length: ${response.size} bytes: ${bytesToHex(response)}")
             return@withContext response.isNotEmpty()
         } catch (e: Exception) {
             Log.e(TAG, "verifyPin error: ${e.message}", e)
@@ -387,9 +399,10 @@ class AndroidTvProtocol(private val context: Context) {
     }
 
     // Step 1: PairingRequest (Protobuf Structure)
+    // [0x08, 0x02, 0x10, 0xC8, 0x01, 0x1A, len, [0x0A, len, "atvremote", 0x12, len, "android"]]
     private fun buildPairingRequestPacket(): ByteArray {
-        val serviceName = "Remote TCL".toByteArray(Charsets.UTF_8)
-        val clientName = "Android Remote".toByteArray(Charsets.UTF_8)
+        val serviceName = "atvremote".toByteArray(Charsets.UTF_8)
+        val clientName = "android".toByteArray(Charsets.UTF_8)
 
         val inner = ByteArrayOutputStream()
         inner.write(0x0A) // Tag 1: service_name
@@ -412,37 +425,24 @@ class AndroidTvProtocol(private val context: Context) {
         return outer.toByteArray()
     }
 
-    // Step 2: PairingOption (Offering HEXADECIMAL type: 3, ALPHANUMERIC type: 1, NUMERIC type: 2)
+    // Step 2: PairingOption (Single exact HEXADECIMAL encoding)
+    // Outer Tag 0x2A -> Inner: [0x08, 0x01 (role: 1), 0x12, 0x04 (encoding: [0x08, 0x03, 0x10, 0x06])]
     private fun buildPairingOptionPacket(): ByteArray {
+        val encoding = ByteArrayOutputStream()
+        encoding.write(0x08); writeVarint(encoding, 3) // type: 3 (ENCODING_TYPE_HEXADECIMAL)
+        encoding.write(0x10); writeVarint(encoding, 6) // symbol_length: 6
+        val encodingBytes = encoding.toByteArray()
+
         val inner = ByteArrayOutputStream()
         inner.write(0x08); writeVarint(inner, 1) // preferred_role: 1 (ROLE_TYPE_INPUT)
-
-        // Encoding 1: HEXADECIMAL (type: 3, symbol_length: 6) - Standard for Google TV
-        val encHex = ByteArrayOutputStream()
-        encHex.write(0x08); writeVarint(encHex, 3) // type: 3 (ENCODING_TYPE_HEXADECIMAL)
-        encHex.write(0x10); writeVarint(encHex, 6) // symbol_length: 6
-        val encHexBytes = encHex.toByteArray()
-        inner.write(0x12); writeVarint(inner, encHexBytes.size); inner.write(encHexBytes)
-
-        // Encoding 2: ALPHANUMERIC (type: 1, symbol_length: 6)
-        val encAlpha = ByteArrayOutputStream()
-        encAlpha.write(0x08); writeVarint(encAlpha, 1) // type: 1 (ENCODING_TYPE_ALPHANUMERIC)
-        encAlpha.write(0x10); writeVarint(encAlpha, 6) // symbol_length: 6
-        val encAlphaBytes = encAlpha.toByteArray()
-        inner.write(0x12); writeVarint(inner, encAlphaBytes.size); inner.write(encAlphaBytes)
-
-        // Encoding 3: NUMERIC (type: 2, symbol_length: 4)
-        val encNum = ByteArrayOutputStream()
-        encNum.write(0x08); writeVarint(encNum, 2) // type: 2 (ENCODING_TYPE_NUMERIC)
-        encNum.write(0x10); writeVarint(encNum, 4) // symbol_length: 4
-        val encNumBytes = encNum.toByteArray()
-        inner.write(0x12); writeVarint(inner, encNumBytes.size); inner.write(encNumBytes)
-
+        inner.write(0x12) // Tag 2: input_encodings
+        writeVarint(inner, encodingBytes.size)
+        inner.write(encodingBytes)
         val innerBytes = inner.toByteArray()
 
         val outer = ByteArrayOutputStream()
-        outer.write(0x08); writeVarint(outer, 2) // protocol_version = 2
-        outer.write(0x10); writeVarint(outer, 200) // status = 200
+        outer.write(0x08); writeVarint(outer, 2)
+        outer.write(0x10); writeVarint(outer, 200)
         outer.write(0x2A) // Tag 5: pairing_option
         writeVarint(outer, innerBytes.size)
         outer.write(innerBytes)
@@ -451,8 +451,8 @@ class AndroidTvProtocol(private val context: Context) {
     }
 
     // Step 3: PairingConfiguration
+    // Outer Tag 0x3A -> Inner: [0x08, 0x01 (role: 1), 0x12, 0x04 (encoding: [0x08, 0x03, 0x10, 0x06])]
     private fun buildPairingConfigurationPacket(): ByteArray {
-        // Encoding: type = 3 (HEXADECIMAL), symbol_length = 6
         val encoding = ByteArrayOutputStream()
         encoding.write(0x08); writeVarint(encoding, 3) // type: 3 (HEXADECIMAL)
         encoding.write(0x10); writeVarint(encoding, 6) // symbol_length: 6
