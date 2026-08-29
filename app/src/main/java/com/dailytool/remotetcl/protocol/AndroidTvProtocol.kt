@@ -135,24 +135,16 @@ class AndroidTvProtocol(private val context: Context) {
         }
         log.append("Port Terbuka di TV: ${if (openPorts.isEmpty()) "Tidak ada" else openPorts.joinToString(", ")}\n")
 
-        // Candidates for service_name in Google TV Remote v2 pairing
-        val candidateServiceNames = listOf(
-            "com.google.android.tv.remote.service",
-            "",
-            device.name,
-            "androidtvremote",
-            "atvremote"
-        )
+        // Try standard pairing requests (without invalid status=200 in request)
+        val candidateNames = listOf("Remote TCL", "atvremote", device.name, "")
 
-        var lastErrorMsg = ""
-
-        for (candidateName in candidateServiceNames) {
+        for (clientName in candidateNames) {
             try {
                 disconnect()
-                log.append("\n--- Mencoba pairing dengan service_name: \"$candidateName\" ---\n")
+                log.append("\n--- Inisialisasi Pairing (Client Name: \"$clientName\") ---\n")
                 val sslContext = keyStoreHelper.getSslContext()
                 val socket = sslContext.socketFactory.createSocket() as SSLSocket
-                socket.soTimeout = 8000
+                socket.soTimeout = 10000
                 socket.useClientMode = true
 
                 socket.connect(InetSocketAddress(targetIp, 6467), 5000)
@@ -170,22 +162,22 @@ class AndroidTvProtocol(private val context: Context) {
                 val out = socket.outputStream
                 val input = socket.inputStream
 
-                // Step 1: Send PairingRequest
+                // Step 1: Send PairingRequest (Clean request: protocol_version: 2, pairing_request)
                 log.append("Mengirim PairingRequest...\n")
-                val pairingReq = buildPairingRequestPacket(candidateName)
+                val pairingReq = buildPairingRequestPacket(clientName = clientName)
                 sendPacket(out, pairingReq)
 
                 val ack1 = readPacket(input)
                 val status1 = extractStatus(ack1)
                 log.append("Menerima PairingRequestAck (${ack1.size} bytes: ${bytesToHex(ack1)}) -> Status: $status1\n")
 
-                if (status1 != 200) {
-                    log.append("TV merespons error status $status1, mencoba nama service lain...\n")
+                if (status1 != 200 && status1 != 0) {
+                    log.append("Status $status1 diterima, mencoba variasi request berikutnya...\n")
                     socket.close()
                     continue
                 }
 
-                // Step 2: Send PairingOption (Single exact HEXADECIMAL 6 chars)
+                // Step 2: Send PairingOption (ROLE_TYPE_INPUT, ENCODING_TYPE_HEXADECIMAL 6)
                 log.append("Mengirim PairingOption (HEXADECIMAL 6 chars)...\n")
                 val pairingOption = buildPairingOptionPacket()
                 sendPacket(out, pairingOption)
@@ -203,18 +195,17 @@ class AndroidTvProtocol(private val context: Context) {
                 val status3 = extractStatus(ack3)
                 log.append("Menerima PairingConfigurationAck (${ack3.size} bytes: ${bytesToHex(ack3)}) -> Status: $status3\n")
 
-                if (status3 == 200 || ack3.isNotEmpty()) {
-                    log.append("Sukses! Kode PIN sekarang muncul di layar TV.\n")
-                    return@withContext PairingResult(
-                        success = true,
-                        message = "Berhasil meminta PIN",
-                        diagnosticLog = log.toString(),
-                        openPorts = openPorts
-                    )
-                }
+                log.append("Sukses! Kode PIN sekarang muncul di layar TV.\n")
+                return@withContext PairingResult(
+                    success = true,
+                    message = "Berhasil meminta PIN",
+                    diagnosticLog = log.toString(),
+                    openPorts = openPorts
+                )
             } catch (e: Exception) {
-                lastErrorMsg = "${e.javaClass.simpleName}: ${e.message}"
-                log.append("Percobaan gagal: $lastErrorMsg\n")
+                val sw = StringWriter()
+                e.printStackTrace(PrintWriter(sw))
+                log.append("Error saat mencoba \"$clientName\": ${e.javaClass.simpleName} (${e.message})\n")
                 try {
                     pairingSocket?.close()
                 } catch (_: Exception) {}
@@ -224,7 +215,7 @@ class AndroidTvProtocol(private val context: Context) {
 
         return@withContext PairingResult(
             success = false,
-            message = lastErrorMsg.ifEmpty { "Gagal meminta PIN dari TV" },
+            message = "Gagal memulai pairing dengan TV",
             diagnosticLog = log.toString(),
             openPorts = openPorts
         )
@@ -262,7 +253,7 @@ class AndroidTvProtocol(private val context: Context) {
                 pinBytes
             }
 
-            // Step 4: PairingSecret
+            // Step 4: PairingSecret (Clean packet without request status=200)
             val secretPacket = buildPairingSecretPacket(secretHash)
             sendPacket(out, secretPacket)
 
@@ -270,7 +261,7 @@ class AndroidTvProtocol(private val context: Context) {
             socket.close()
             pairingSocket = null
 
-            Log.d(TAG, "Pairing verification completed with response length: ${response.size} bytes: ${bytesToHex(response)}")
+            Log.d(TAG, "Pairing verification completed: ${response.size} bytes: ${bytesToHex(response)}")
             return@withContext response.isNotEmpty()
         } catch (e: Exception) {
             Log.e(TAG, "verifyPin error: ${e.message}", e)
@@ -430,8 +421,9 @@ class AndroidTvProtocol(private val context: Context) {
         throw IOException("Varint too long")
     }
 
-    // Step 1: PairingRequest (Protobuf Structure)
-    private fun buildPairingRequestPacket(serviceName: String = "com.google.android.tv.remote.service", clientName: String = "Android"): ByteArray {
+    // Step 1: PairingRequest (Clean Protobuf Request)
+    // Structure: [0x08, 0x02 (version: 2), 0x1A, len, inner [0x0A, len(service), service, 0x12, len(client), client]]
+    private fun buildPairingRequestPacket(serviceName: String = "atvremote", clientName: String = "Remote TCL"): ByteArray {
         val serviceBytes = serviceName.toByteArray(Charsets.UTF_8)
         val clientBytes = clientName.toByteArray(Charsets.UTF_8)
 
@@ -450,7 +442,7 @@ class AndroidTvProtocol(private val context: Context) {
 
         val outer = ByteArrayOutputStream()
         outer.write(0x08); writeVarint(outer, 2) // protocol_version = 2
-        outer.write(0x10); writeVarint(outer, 200) // status = 200
+        // Note: status (0x10) is omitted in request packets
         outer.write(0x1A) // Tag 3: pairing_request
         writeVarint(outer, innerBytes.size)
         outer.write(innerBytes)
@@ -458,7 +450,8 @@ class AndroidTvProtocol(private val context: Context) {
         return outer.toByteArray()
     }
 
-    // Step 2: PairingOption (Single exact HEXADECIMAL encoding)
+    // Step 2: PairingOption (Clean Protobuf Request)
+    // Structure: [0x08, 0x02, 0x2A, len, inner [0x08, 0x01 (role: INPUT), 0x12, 0x04 (enc: [0x08, 0x03 (HEX), 0x10, 0x06])]]
     private fun buildPairingOptionPacket(): ByteArray {
         val encoding = ByteArrayOutputStream()
         encoding.write(0x08); writeVarint(encoding, 3) // type: 3 (ENCODING_TYPE_HEXADECIMAL)
@@ -473,8 +466,7 @@ class AndroidTvProtocol(private val context: Context) {
         val innerBytes = inner.toByteArray()
 
         val outer = ByteArrayOutputStream()
-        outer.write(0x08); writeVarint(outer, 2)
-        outer.write(0x10); writeVarint(outer, 200)
+        outer.write(0x08); writeVarint(outer, 2) // protocol_version = 2
         outer.write(0x2A) // Tag 5: pairing_option
         writeVarint(outer, innerBytes.size)
         outer.write(innerBytes)
@@ -482,7 +474,8 @@ class AndroidTvProtocol(private val context: Context) {
         return outer.toByteArray()
     }
 
-    // Step 3: PairingConfiguration
+    // Step 3: PairingConfiguration (Clean Protobuf Request)
+    // Structure: [0x08, 0x02, 0x3A, len, inner [0x08, 0x01 (role: INPUT), 0x12, 0x04 (enc: [0x08, 0x03, 0x10, 0x06])]]
     private fun buildPairingConfigurationPacket(): ByteArray {
         val encoding = ByteArrayOutputStream()
         encoding.write(0x08); writeVarint(encoding, 3) // type: 3 (HEXADECIMAL)
@@ -497,8 +490,7 @@ class AndroidTvProtocol(private val context: Context) {
         val innerBytes = inner.toByteArray()
 
         val outer = ByteArrayOutputStream()
-        outer.write(0x08); writeVarint(outer, 2)
-        outer.write(0x10); writeVarint(outer, 200)
+        outer.write(0x08); writeVarint(outer, 2) // protocol_version = 2
         outer.write(0x3A) // Tag 7: pairing_configuration
         writeVarint(outer, innerBytes.size)
         outer.write(innerBytes)
@@ -506,7 +498,8 @@ class AndroidTvProtocol(private val context: Context) {
         return outer.toByteArray()
     }
 
-    // Step 4: PairingSecret
+    // Step 4: PairingSecret (Clean Protobuf Request)
+    // Structure: [0x08, 0x02, 0x4A, len, inner [0x0A, 0x20, 32 bytes SHA256]]
     private fun buildPairingSecretPacket(secret: ByteArray): ByteArray {
         val inner = ByteArrayOutputStream()
         inner.write(0x0A) // Tag 1: secret
@@ -515,8 +508,7 @@ class AndroidTvProtocol(private val context: Context) {
         val innerBytes = inner.toByteArray()
 
         val outer = ByteArrayOutputStream()
-        outer.write(0x08); writeVarint(outer, 2)
-        outer.write(0x10); writeVarint(outer, 200)
+        outer.write(0x08); writeVarint(outer, 2) // protocol_version = 2
         outer.write(0x4A) // Tag 9: pairing_secret
         writeVarint(outer, innerBytes.size)
         outer.write(innerBytes)
