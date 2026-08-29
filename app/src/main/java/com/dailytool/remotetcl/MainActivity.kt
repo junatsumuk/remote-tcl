@@ -8,6 +8,8 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import android.view.View
+import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.Button
 import android.widget.EditText
 import android.widget.ProgressBar
@@ -52,9 +54,13 @@ class MainActivity : AppCompatActivity() {
     private fun setupSavedTv() {
         val savedDevice = remoteManager.currentDevice
         if (savedDevice != null) {
-            updateUiConnected(savedDevice)
             lifecycleScope.launch {
-                remoteManager.connect(savedDevice)
+                val connected = remoteManager.connect(savedDevice)
+                if (connected) {
+                    updateUiConnected(savedDevice)
+                } else {
+                    updateUiDisconnected()
+                }
             }
         } else {
             updateUiDisconnected()
@@ -119,8 +125,7 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             val success = remoteManager.sendKey(key)
             if (!success) {
-                // Sinyal gagal terkirim
-                // Bisa dipicu jika TV baru bangun tidur atau ganti IP
+                Toast.makeText(this@MainActivity, "Gagal mengirim perintah. Pastikan TV menyala.", Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -143,6 +148,11 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         } catch (_: Exception) {}
+    }
+
+    private fun applyDialogSize(dialog: Dialog) {
+        val width = (resources.displayMetrics.widthPixels * 0.92).toInt()
+        dialog.window?.setLayout(width, ViewGroup.LayoutParams.WRAP_CONTENT)
     }
 
     private fun showScanDialog() {
@@ -180,6 +190,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         dialog.show()
+        applyDialogSize(dialog)
         startScan(adapter, progressScan, tvScanHint, tvEmpty)
     }
 
@@ -218,24 +229,42 @@ class MainActivity : AppCompatActivity() {
     private fun onDeviceSelected(device: TvDevice) {
         lifecycleScope.launch {
             Toast.makeText(this@MainActivity, "Menghubungkan ke ${device.name}...", Toast.LENGTH_SHORT).show()
+
+            if (device.type == TvType.ROKU_TV) {
+                remoteManager.saveDevice(device)
+                updateUiConnected(device)
+                Toast.makeText(this@MainActivity, "Terhubung ke ${device.name}", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+
+            // 1. Try Direct Connect (if already paired before)
             val connected = remoteManager.connect(device)
             if (connected) {
                 updateUiConnected(device)
                 Toast.makeText(this@MainActivity, "Berhasil terhubung ke ${device.name}", Toast.LENGTH_SHORT).show()
-            } else if (device.type == TvType.ANDROID_TV) {
-                // Start Pairing Flow for Android TV
-                showPinPairingDialog(device)
             } else {
-                updateUiConnected(device)
+                // 2. Need PIN Pairing
+                showPinPairingDialog(device)
             }
         }
     }
 
     private fun showPinPairingDialog(device: TvDevice) {
         lifecycleScope.launch {
+            Toast.makeText(this@MainActivity, "Meminta kode PIN ke TV...", Toast.LENGTH_SHORT).show()
             val pairingStarted = remoteManager.androidTvProtocol.startPairing(device)
             if (!pairingStarted) {
-                Toast.makeText(this@MainActivity, "Gagal memulai pairing dengan TV", Toast.LENGTH_SHORT).show()
+                // If pairing protocol failed, test if T-Cast or direct HTTP commands work
+                val tcastWorks = remoteManager.tclCastProtocol.sendKey(device, TvKey.VOLUME_UP)
+                if (tcastWorks) {
+                    remoteManager.saveDevice(device)
+                    updateUiConnected(device)
+                    Toast.makeText(this@MainActivity, "Terhubung via TCL Smart Protocol", Toast.LENGTH_SHORT).show()
+                    return@launch
+                }
+
+                updateUiDisconnected()
+                Toast.makeText(this@MainActivity, "Gagal memulai pairing. Pastikan TV dalam keadaan ON.", Toast.LENGTH_LONG).show()
                 return@launch
             }
 
@@ -247,7 +276,10 @@ class MainActivity : AppCompatActivity() {
             val btnConfirm = dialog.findViewById<Button>(R.id.btn_pin_confirm)
             val btnCancel = dialog.findViewById<Button>(R.id.btn_pin_cancel)
 
-            btnCancel.setOnClickListener { dialog.dismiss() }
+            btnCancel.setOnClickListener {
+                remoteManager.androidTvProtocol.disconnect()
+                dialog.dismiss()
+            }
 
             btnConfirm.setOnClickListener {
                 val pin = etPin.text.toString().trim()
@@ -270,6 +302,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             dialog.show()
+            applyDialogSize(dialog)
         }
     }
 
@@ -310,6 +343,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         dialog.show()
+        applyDialogSize(dialog)
     }
 
     override fun onDestroy() {

@@ -15,6 +15,7 @@ class TvRemoteManager(private val context: Context) {
 
     val rokuProtocol = RokuProtocol()
     val androidTvProtocol = AndroidTvProtocol(context)
+    val tclCastProtocol = TclCastProtocol()
 
     var currentDevice: TvDevice? = null
         private set
@@ -34,12 +35,12 @@ class TvRemoteManager(private val context: Context) {
         }
         val port = prefs.getInt("tv_port", if (type == TvType.ROKU_TV) 8060 else 6466)
 
-        currentDevice = TvDevice(name = name, ipAddress = ip, port = port, type = type)
+        currentDevice = TvDevice(name = name, ipAddress = ip, port = port, type = type, isPaired = true)
         return currentDevice
     }
 
     fun saveDevice(device: TvDevice) {
-        currentDevice = device
+        currentDevice = device.copy(isPaired = true)
         prefs.edit()
             .putString("tv_ip", device.ipAddress)
             .putString("tv_name", device.name)
@@ -48,34 +49,50 @@ class TvRemoteManager(private val context: Context) {
             .apply()
     }
 
+    fun clearSavedDevice() {
+        currentDevice = null
+        prefs.edit().clear().apply()
+    }
+
     suspend fun connect(device: TvDevice): Boolean = withContext(Dispatchers.IO) {
-        saveDevice(device)
         return@withContext if (device.type == TvType.ROKU_TV) {
-            // For Roku, test ping with a query or dummy key
+            saveDevice(device)
             true
         } else {
-            androidTvProtocol.connect(device)
+            val connected = androidTvProtocol.connect(device)
+            if (connected) {
+                saveDevice(device)
+            }
+            connected
         }
     }
 
     suspend fun sendKey(key: TvKey): Boolean = withContext(Dispatchers.IO) {
         val device = currentDevice ?: return@withContext false
-        return@withContext when (device.type) {
-            TvType.ROKU_TV -> rokuProtocol.sendKey(device, key)
-            TvType.ANDROID_TV, TvType.UNKNOWN -> {
-                // Try Android TV socket first, if not connected try reconnecting
-                val sent = androidTvProtocol.sendKey(key)
-                if (!sent) {
-                    if (androidTvProtocol.connect(device)) {
-                        androidTvProtocol.sendKey(key)
-                    } else {
-                        // Fallback to Roku HTTP command just in case
-                        rokuProtocol.sendKey(device, key)
-                    }
-                } else {
-                    true
-                }
+
+        if (device.type == TvType.ROKU_TV) {
+            return@withContext rokuProtocol.sendKey(device, key)
+        }
+
+        // 1. Try Android TV TLS Socket
+        var sent = androidTvProtocol.sendKey(key)
+        if (!sent) {
+            // Reconnect and retry
+            if (androidTvProtocol.connect(device)) {
+                sent = androidTvProtocol.sendKey(key)
             }
         }
+
+        // 2. Try TCL T-Cast HTTP API if Android TV protocol was not accepted
+        if (!sent) {
+            sent = tclCastProtocol.sendKey(device, key)
+        }
+
+        // 3. Try Roku ECP API as final fallback
+        if (!sent) {
+            sent = rokuProtocol.sendKey(device, key)
+        }
+
+        return@withContext sent
     }
 }
