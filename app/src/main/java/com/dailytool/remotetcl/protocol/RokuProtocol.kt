@@ -9,6 +9,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
 class RokuProtocol {
@@ -61,6 +62,42 @@ class RokuProtocol {
         } catch (e: Exception) {
             Log.e(TAG, "Failed to send key $key to ${device.ipAddress}: ${e.message}")
             return@withContext false
+        }
+    }
+
+    suspend fun sendText(device: TvDevice, text: String): Boolean = withContext(Dispatchers.IO) {
+        for (char in text) {
+            try {
+                val encoded = when (char) {
+                    ' ' -> "%20"
+                    '+' -> "%2B"
+                    else -> URLEncoder.encode(char.toString(), "UTF-8")
+                }
+                val url = "http://${device.ipAddress}:8060/keypress/Lit_$encoded"
+                val request = Request.Builder().url(url).post(emptyBody).build()
+                client.newCall(request).execute().close()
+            } catch (_: Exception) {}
+        }
+        return@withContext true
+    }
+
+    suspend fun sendBackspace(device: TvDevice): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val url = "http://${device.ipAddress}:8060/keypress/Backspace"
+            val request = Request.Builder().url(url).post(emptyBody).build()
+            client.newCall(request).execute().use { it.isSuccessful }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    suspend fun sendEnter(device: TvDevice): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val url = "http://${device.ipAddress}:8060/keypress/Enter"
+            val request = Request.Builder().url(url).post(emptyBody).build()
+            client.newCall(request).execute().use { it.isSuccessful }
+        } catch (_: Exception) {
+            false
         }
     }
 }

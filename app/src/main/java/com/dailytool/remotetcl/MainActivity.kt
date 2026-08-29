@@ -9,7 +9,7 @@ import android.os.Vibrator
 import android.os.VibratorManager
 import android.view.View
 import android.view.ViewGroup
-import android.view.WindowManager
+import android.view.inputmethod.EditorInfo
 import android.widget.Button
 import android.widget.EditText
 import android.widget.ProgressBar
@@ -91,6 +91,7 @@ class MainActivity : AppCompatActivity() {
         // Top navigation
         binding.btnBack.setOnClickListener { sendKey(TvKey.BACK) }
         binding.btnHome.setOnClickListener { sendKey(TvKey.HOME) }
+        binding.btnKeyboard.setOnClickListener { showKeyboardDialog() }
         binding.btnMenu.setOnClickListener { sendKey(TvKey.MENU) }
 
         // D-Pad
@@ -128,6 +129,80 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this@MainActivity, "Gagal mengirim perintah. Pastikan TV menyala.", Toast.LENGTH_SHORT).show()
             }
         }
+    }
+
+    private fun showKeyboardDialog() {
+        if (remoteManager.currentDevice == null) {
+            Toast.makeText(this, "Hubungkan TV terlebih dahulu", Toast.LENGTH_SHORT).show()
+            showScanDialog()
+            return
+        }
+
+        val dialog = Dialog(this)
+        dialog.setContentView(R.layout.dialog_keyboard)
+        dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
+
+        val etInput = dialog.findViewById<EditText>(R.id.et_keyboard_input)
+        val btnSend = dialog.findViewById<Button>(R.id.btn_kb_send)
+        val btnBackspace = dialog.findViewById<Button>(R.id.btn_kb_backspace)
+        val btnClear = dialog.findViewById<Button>(R.id.btn_kb_clear)
+        val btnEnter = dialog.findViewById<Button>(R.id.btn_kb_enter)
+        val btnClose = dialog.findViewById<Button>(R.id.btn_kb_close)
+
+        btnClose.setOnClickListener { dialog.dismiss() }
+
+        btnBackspace.setOnClickListener {
+            vibrateFeedback()
+            val text = etInput.text.toString()
+            if (text.isNotEmpty()) {
+                etInput.setText(text.substring(0, text.length - 1))
+                etInput.setSelection(etInput.text.length)
+            }
+            lifecycleScope.launch {
+                remoteManager.sendBackspace()
+            }
+        }
+
+        btnClear.setOnClickListener {
+            vibrateFeedback()
+            etInput.setText("")
+        }
+
+        btnEnter.setOnClickListener {
+            vibrateFeedback()
+            lifecycleScope.launch {
+                remoteManager.sendEnter()
+            }
+        }
+
+        val doSend = {
+            vibrateFeedback()
+            val text = etInput.text.toString()
+            if (text.isNotEmpty()) {
+                lifecycleScope.launch {
+                    val sent = remoteManager.sendText(text)
+                    if (sent) {
+                        Toast.makeText(this@MainActivity, "Teks terkirim ke TV", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(this@MainActivity, "Gagal mengirim teks", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+        }
+
+        btnSend.setOnClickListener { doSend() }
+
+        etInput.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_SEND || actionId == EditorInfo.IME_ACTION_DONE) {
+                doSend()
+                true
+            } else {
+                false
+            }
+        }
+
+        dialog.show()
+        applyDialogSize(dialog)
     }
 
     private fun vibrateFeedback() {
@@ -214,12 +289,15 @@ class MainActivity : AppCompatActivity() {
             override fun onDeviceFound(device: TvDevice) {
                 adapter.addDevice(device)
                 emptyView.visibility = View.GONE
+                hint.text = "Ditemukan ${adapter.itemCount} TV (Tekan untuk memilih)"
             }
 
             override fun onDiscoveryFinished(devices: List<TvDevice>) {
                 progress.visibility = View.GONE
-                hint.text = "Selesai memindai (${devices.size} TV ditemukan)"
-                if (devices.isEmpty()) {
+                if (devices.isNotEmpty()) {
+                    hint.text = "Pilih TV yang ingin dihubungkan (${devices.size} TV)"
+                } else {
+                    hint.text = "Selesai memindai"
                     emptyView.visibility = View.VISIBLE
                 }
             }

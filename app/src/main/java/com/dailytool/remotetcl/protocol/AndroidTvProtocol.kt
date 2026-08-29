@@ -5,12 +5,13 @@ import android.util.Log
 import com.dailytool.remotetcl.model.TvDevice
 import com.dailytool.remotetcl.model.TvKey
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
+import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.InetSocketAddress
-import java.net.Socket
 import java.security.MessageDigest
 import java.security.cert.X509Certificate
 import javax.net.ssl.SSLSocket
@@ -26,8 +27,19 @@ class AndroidTvProtocol(private val context: Context) {
 
     // Android KeyEvent KeyCodes
     object AndroidKeyCodes {
+        const val KEYCODE_UNKNOWN = 0
         const val KEYCODE_HOME = 3
         const val KEYCODE_BACK = 4
+        const val KEYCODE_0 = 7
+        const val KEYCODE_1 = 8
+        const val KEYCODE_2 = 9
+        const val KEYCODE_3 = 10
+        const val KEYCODE_4 = 11
+        const val KEYCODE_5 = 12
+        const val KEYCODE_6 = 13
+        const val KEYCODE_7 = 14
+        const val KEYCODE_8 = 15
+        const val KEYCODE_9 = 16
         const val KEYCODE_DPAD_UP = 19
         const val KEYCODE_DPAD_DOWN = 20
         const val KEYCODE_DPAD_LEFT = 21
@@ -36,6 +48,42 @@ class AndroidTvProtocol(private val context: Context) {
         const val KEYCODE_VOLUME_UP = 24
         const val KEYCODE_VOLUME_DOWN = 25
         const val KEYCODE_POWER = 26
+        const val KEYCODE_A = 29
+        const val KEYCODE_B = 30
+        const val KEYCODE_C = 31
+        const val KEYCODE_D = 32
+        const val KEYCODE_E = 33
+        const val KEYCODE_F = 34
+        const val KEYCODE_G = 35
+        const val KEYCODE_H = 36
+        const val KEYCODE_I = 37
+        const val KEYCODE_J = 38
+        const val KEYCODE_K = 39
+        const val KEYCODE_L = 40
+        const val KEYCODE_M = 41
+        const val KEYCODE_N = 42
+        const val KEYCODE_O = 43
+        const val KEYCODE_P = 44
+        const val KEYCODE_Q = 45
+        const val KEYCODE_R = 46
+        const val KEYCODE_S = 47
+        const val KEYCODE_T = 48
+        const val KEYCODE_U = 49
+        const val KEYCODE_V = 50
+        const val KEYCODE_W = 51
+        const val KEYCODE_X = 52
+        const val KEYCODE_Y = 53
+        const val KEYCODE_Z = 54
+        const val KEYCODE_COMMA = 55
+        const val KEYCODE_PERIOD = 56
+        const val KEYCODE_SPACE = 62
+        const val KEYCODE_ENTER = 66
+        const val KEYCODE_DEL = 67
+        const val KEYCODE_MINUS = 69
+        const val KEYCODE_EQUALS = 70
+        const val KEYCODE_SLASH = 76
+        const val KEYCODE_AT = 77
+        const val KEYCODE_PLUS = 81
         const val KEYCODE_MENU = 82
         const val KEYCODE_MEDIA_PLAY_PAUSE = 85
         const val KEYCODE_CHANNEL_UP = 166
@@ -48,13 +96,13 @@ class AndroidTvProtocol(private val context: Context) {
             disconnect()
             val sslContext = keyStoreHelper.getSslContext()
             val socket = sslContext.socketFactory.createSocket() as SSLSocket
-            socket.soTimeout = 8000
-            socket.connect(InetSocketAddress(device.ipAddress, 6467), 5000)
+            socket.soTimeout = 10000
+            socket.useClientMode = true
+            socket.connect(InetSocketAddress(device.ipAddress, 6467), 6000)
             socket.startHandshake()
 
             pairingSocket = socket
 
-            // Retrieve server certificate for secret hash computation
             val certs = socket.session.peerCertificates
             if (certs.isNotEmpty() && certs[0] is X509Certificate) {
                 serverCert = certs[0] as X509Certificate
@@ -63,23 +111,25 @@ class AndroidTvProtocol(private val context: Context) {
             val out = socket.outputStream
             val input = socket.inputStream
 
-            // Step 1: Send PairingRequest
-            // Protobuf message: PairingRequest { protocol_version: 2, status: STATUS_OK (200), service_name: "Remote TCL", client_role: 1 }
+            // 1. PairingRequest
             val pairingReq = buildPairingRequestPacket()
             sendPacket(out, pairingReq)
-            readPacket(input) // Read TV Ack
+            val ack1 = readPacket(input)
+            Log.d(TAG, "PairingRequestAck received, bytes: ${ack1.size}")
 
-            // Step 2: Send PairingOption
+            // 2. PairingOption
             val pairingOption = buildPairingOptionPacket()
             sendPacket(out, pairingOption)
-            readPacket(input) // Read TV Option Ack
+            val ack2 = readPacket(input)
+            Log.d(TAG, "PairingOptionAck received, bytes: ${ack2.size}")
 
-            // Step 3: Send PairingConfiguration
+            // 3. PairingConfiguration
             val pairingConfig = buildPairingConfigurationPacket()
             sendPacket(out, pairingConfig)
-            readPacket(input) // Read TV Config Ack -> TV now shows PIN on screen
+            val ack3 = readPacket(input)
+            Log.d(TAG, "PairingConfigAck received, bytes: ${ack3.size}")
 
-            Log.d(TAG, "Pairing sequence initiated successfully. Waiting for user PIN.")
+            Log.d(TAG, "Pairing request successfully negotiated. PIN should now appear on TV.")
             return@withContext true
         } catch (e: Exception) {
             Log.e(TAG, "startPairing failed on ${device.ipAddress}: ${e.message}", e)
@@ -97,31 +147,41 @@ class AndroidTvProtocol(private val context: Context) {
             val out = socket.outputStream
             val input = socket.inputStream
 
-            // Calculate secret hash: SHA-256(client_cert_encoded + server_cert_encoded + pin_bytes)
+            val cleanPin = pin.trim()
             val clientCert = keyStoreHelper.clientCertificate
             val sCert = serverCert
+
+            // Calculate PIN bytes (try hex decoded if hex string, otherwise ASCII)
+            val pinBytes = try {
+                if (cleanPin.length % 2 == 0 && cleanPin.matches(Regex("^[0-9a-fA-F]+$"))) {
+                    cleanPin.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+                } else {
+                    cleanPin.uppercase().toByteArray(Charsets.UTF_8)
+                }
+            } catch (_: Exception) {
+                cleanPin.toByteArray(Charsets.UTF_8)
+            }
 
             val secretHash = if (clientCert != null && sCert != null) {
                 val md = MessageDigest.getInstance("SHA-256")
                 md.update(clientCert.encoded)
                 md.update(sCert.encoded)
-                md.update(pin.toByteArray(Charsets.UTF_8))
+                md.update(pinBytes)
                 md.digest()
             } else {
-                pin.toByteArray(Charsets.UTF_8)
+                pinBytes
             }
 
-            // Step 4: Send PairingSecret
+            // 4. PairingSecret
             val secretPacket = buildPairingSecretPacket(secretHash)
             sendPacket(out, secretPacket)
 
-            // Read Secret Ack
             val response = readPacket(input)
             socket.close()
             pairingSocket = null
 
-            Log.d(TAG, "Pairing verification completed. Response size: ${response.size}")
-            return@withContext true
+            Log.d(TAG, "Pairing verification completed with response length: ${response.size}")
+            return@withContext response.isNotEmpty()
         } catch (e: Exception) {
             Log.e(TAG, "verifyPin error: ${e.message}", e)
             try {
@@ -138,6 +198,7 @@ class AndroidTvProtocol(private val context: Context) {
             val sslContext = keyStoreHelper.getSslContext()
             val socket = sslContext.socketFactory.createSocket() as SSLSocket
             socket.soTimeout = 5000
+            socket.useClientMode = true
             socket.connect(InetSocketAddress(device.ipAddress, 6466), 4000)
             socket.startHandshake()
 
@@ -177,44 +238,72 @@ class AndroidTvProtocol(private val context: Context) {
             TvKey.PLAY_PAUSE -> AndroidKeyCodes.KEYCODE_MEDIA_PLAY_PAUSE
             TvKey.NETFLIX, TvKey.YOUTUBE, TvKey.PRIME_VIDEO -> AndroidKeyCodes.KEYCODE_HOME
         }
+        return@withContext sendKeyCode(keyCode)
+    }
 
+    suspend fun sendKeyCode(keyCode: Int): Boolean = withContext(Dispatchers.IO) {
         try {
             val socket = remoteSocket ?: return@withContext false
             val out = socket.outputStream
 
-            // Android TV Remote v2 Key Injection Packet:
-            // Outer Message tag 0x52 (RemoteKeyInject) -> inner keycode & action (2 = PRESS)
             val payload = ByteArrayOutputStream()
-            payload.write(0x08) // field 1: keycode (varint)
+            payload.write(0x08) // field 1: key_code
             writeVarint(payload, keyCode)
-            payload.write(0x10) // field 2: direction (varint)
-            writeVarint(payload, 2) // SHORT_PRESS
+            payload.write(0x10) // field 2: direction (2 = SHORT_PRESS)
+            writeVarint(payload, 2)
 
             val payloadBytes = payload.toByteArray()
             val outer = ByteArrayOutputStream()
-            outer.write(0x52) // Tag 10 (RemoteKeyInject)
+            outer.write(0x52) // Tag 10 (remote_key_inject)
             writeVarint(outer, payloadBytes.size)
             outer.write(payloadBytes)
 
-            val outerBytes = outer.toByteArray()
-            sendPacket(out, outerBytes)
+            sendPacket(out, outer.toByteArray())
             return@withContext true
         } catch (e: Exception) {
-            Log.e(TAG, "sendKey error: ${e.message}")
+            Log.e(TAG, "sendKeyCode error: ${e.message}")
             disconnect()
             return@withContext false
         }
     }
 
+    suspend fun sendText(text: String): Boolean = withContext(Dispatchers.IO) {
+        for (char in text) {
+            val keyCode = getKeyCodeForChar(char)
+            if (keyCode != AndroidKeyCodes.KEYCODE_UNKNOWN) {
+                sendKeyCode(keyCode)
+                delay(60)
+            }
+        }
+        return@withContext true
+    }
+
+    private fun getKeyCodeForChar(c: Char): Int {
+        return when (c) {
+            in 'a'..'z' -> AndroidKeyCodes.KEYCODE_A + (c - 'a')
+            in 'A'..'Z' -> AndroidKeyCodes.KEYCODE_A + (c - 'A')
+            in '0'..'9' -> AndroidKeyCodes.KEYCODE_0 + (c - '0')
+            ' ' -> AndroidKeyCodes.KEYCODE_SPACE
+            '\n' -> AndroidKeyCodes.KEYCODE_ENTER
+            ',' -> AndroidKeyCodes.KEYCODE_COMMA
+            '.' -> AndroidKeyCodes.KEYCODE_PERIOD
+            '-' -> AndroidKeyCodes.KEYCODE_MINUS
+            '=' -> AndroidKeyCodes.KEYCODE_EQUALS
+            '/' -> AndroidKeyCodes.KEYCODE_SLASH
+            '@' -> AndroidKeyCodes.KEYCODE_AT
+            '+' -> AndroidKeyCodes.KEYCODE_PLUS
+            else -> AndroidKeyCodes.KEYCODE_UNKNOWN
+        }
+    }
+
     private fun sendPacket(out: OutputStream, data: ByteArray) {
-        val len = data.size
-        out.write(len)
+        writeVarint(out, data.size)
         out.write(data)
         out.flush()
     }
 
     private fun readPacket(input: InputStream): ByteArray {
-        val len = input.read()
+        val len = readVarint(input)
         if (len <= 0) return byteArrayOf()
         val buf = ByteArray(len)
         var total = 0
@@ -226,7 +315,7 @@ class AndroidTvProtocol(private val context: Context) {
         return buf
     }
 
-    private fun writeVarint(out: ByteArrayOutputStream, value: Int) {
+    private fun writeVarint(out: OutputStream, value: Int) {
         var v = value
         while ((v and 0xFFFFFF80.toInt()) != 0) {
             out.write((v and 0x7F) or 0x80)
@@ -235,42 +324,112 @@ class AndroidTvProtocol(private val context: Context) {
         out.write(v and 0x7F)
     }
 
+    private fun readVarint(input: InputStream): Int {
+        var result = 0
+        var shift = 0
+        while (shift < 32) {
+            val b = input.read()
+            if (b == -1) {
+                if (shift == 0) return -1
+                throw IOException("Truncated varint")
+            }
+            result = result or ((b and 0x7F) shl shift)
+            if ((b and 0x80) == 0) return result
+            shift += 7
+        }
+        throw IOException("Varint too long")
+    }
+
+    // Step 1: PairingRequest (Protobuf Structure)
     private fun buildPairingRequestPacket(): ByteArray {
-        val nameBytes = "Remote TCL".toByteArray(Charsets.UTF_8)
-        val baos = ByteArrayOutputStream()
-        baos.write(0x08); writeVarint(baos, 2) // protocol_version = 2
-        baos.write(0x10); writeVarint(baos, 200) // status = STATUS_OK (200)
-        baos.write(0x1a); writeVarint(baos, nameBytes.size); baos.write(nameBytes) // service_name
-        baos.write(0x20); writeVarint(baos, 1) // client_role = 1
-        return baos.toByteArray()
+        val serviceName = "Remote TCL".toByteArray(Charsets.UTF_8)
+        val clientName = "Android Remote".toByteArray(Charsets.UTF_8)
+
+        val inner = ByteArrayOutputStream()
+        inner.write(0x0A) // Tag 1: service_name
+        writeVarint(inner, serviceName.size)
+        inner.write(serviceName)
+
+        inner.write(0x12) // Tag 2: client_name
+        writeVarint(inner, clientName.size)
+        inner.write(clientName)
+
+        val innerBytes = inner.toByteArray()
+
+        val outer = ByteArrayOutputStream()
+        outer.write(0x08); writeVarint(outer, 2) // protocol_version = 2
+        outer.write(0x10); writeVarint(outer, 200) // status = 200
+        outer.write(0x1A) // Tag 3: pairing_request
+        writeVarint(outer, innerBytes.size)
+        outer.write(innerBytes)
+
+        return outer.toByteArray()
     }
 
+    // Step 2: PairingOption
     private fun buildPairingOptionPacket(): ByteArray {
-        val baos = ByteArrayOutputStream()
-        baos.write(0x08); writeVarint(baos, 2) // protocol_version = 2
-        baos.write(0x10); writeVarint(baos, 200) // status = 200
-        baos.write(0x18); writeVarint(baos, 1) // preferred_role = 1
-        baos.write(0x22); writeVarint(baos, 4) // input_encodings
-        baos.write(byteArrayOf(0x08, 0x01, 0x10, 0x06)) // type: 1 (HEX), length: 6
-        return baos.toByteArray()
+        val encoding = ByteArrayOutputStream()
+        encoding.write(0x08); writeVarint(encoding, 1) // type: 1 (HEXADECIMAL)
+        encoding.write(0x10); writeVarint(encoding, 6) // symbol_length: 6
+        val encodingBytes = encoding.toByteArray()
+
+        val inner = ByteArrayOutputStream()
+        inner.write(0x08); writeVarint(inner, 1) // preferred_role: 1 (ROLE_TYPE_INPUT)
+        inner.write(0x12) // Tag 2: input_encodings
+        writeVarint(inner, encodingBytes.size)
+        inner.write(encodingBytes)
+        val innerBytes = inner.toByteArray()
+
+        val outer = ByteArrayOutputStream()
+        outer.write(0x08); writeVarint(outer, 2)
+        outer.write(0x10); writeVarint(outer, 200)
+        outer.write(0x2A) // Tag 5: pairing_option
+        writeVarint(outer, innerBytes.size)
+        outer.write(innerBytes)
+
+        return outer.toByteArray()
     }
 
+    // Step 3: PairingConfiguration
     private fun buildPairingConfigurationPacket(): ByteArray {
-        val baos = ByteArrayOutputStream()
-        baos.write(0x08); writeVarint(baos, 2) // protocol_version = 2
-        baos.write(0x10); writeVarint(baos, 200) // status = 200
-        baos.write(0x18); writeVarint(baos, 1) // client_role = 1
-        baos.write(0x22); writeVarint(baos, 4) // encoding
-        baos.write(byteArrayOf(0x08, 0x01, 0x10, 0x06)) // type: 1 (HEX), length: 6
-        return baos.toByteArray()
+        val encoding = ByteArrayOutputStream()
+        encoding.write(0x08); writeVarint(encoding, 1)
+        encoding.write(0x10); writeVarint(encoding, 6)
+        val encodingBytes = encoding.toByteArray()
+
+        val inner = ByteArrayOutputStream()
+        inner.write(0x08); writeVarint(inner, 1) // client_role: 1
+        inner.write(0x12) // Tag 2: encoding
+        writeVarint(inner, encodingBytes.size)
+        inner.write(encodingBytes)
+        val innerBytes = inner.toByteArray()
+
+        val outer = ByteArrayOutputStream()
+        outer.write(0x08); writeVarint(outer, 2)
+        outer.write(0x10); writeVarint(outer, 200)
+        outer.write(0x3A) // Tag 7: pairing_configuration
+        writeVarint(outer, innerBytes.size)
+        outer.write(innerBytes)
+
+        return outer.toByteArray()
     }
 
+    // Step 4: PairingSecret
     private fun buildPairingSecretPacket(secret: ByteArray): ByteArray {
-        val baos = ByteArrayOutputStream()
-        baos.write(0x08); writeVarint(baos, 2) // protocol_version = 2
-        baos.write(0x10); writeVarint(baos, 200) // status = 200
-        baos.write(0x1a); writeVarint(baos, secret.size); baos.write(secret)
-        return baos.toByteArray()
+        val inner = ByteArrayOutputStream()
+        inner.write(0x0A) // Tag 1: secret
+        writeVarint(inner, secret.size)
+        inner.write(secret)
+        val innerBytes = inner.toByteArray()
+
+        val outer = ByteArrayOutputStream()
+        outer.write(0x08); writeVarint(outer, 2)
+        outer.write(0x10); writeVarint(outer, 200)
+        outer.write(0x4A) // Tag 9: pairing_secret
+        writeVarint(outer, innerBytes.size)
+        outer.write(innerBytes)
+
+        return outer.toByteArray()
     }
 
     fun disconnect() {

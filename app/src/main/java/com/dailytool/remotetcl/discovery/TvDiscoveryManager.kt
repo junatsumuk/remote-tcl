@@ -10,9 +10,11 @@ import com.dailytool.remotetcl.model.TvType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
-import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.Socket
 
 class TvDiscoveryManager(private val context: Context) {
@@ -25,6 +27,7 @@ class TvDiscoveryManager(private val context: Context) {
     private val discoveredDevices = mutableMapOf<String, TvDevice>()
     private var discoveryListener: DiscoveryCallback? = null
     private var scanJob: Job? = null
+    private var isScanning = false
 
     interface DiscoveryCallback {
         fun onDeviceFound(device: TvDevice)
@@ -41,8 +44,10 @@ class TvDiscoveryManager(private val context: Context) {
     private val nsdListeners = mutableListOf<NsdManager.DiscoveryListener>()
 
     fun startDiscovery(callback: DiscoveryCallback) {
+        stopDiscovery()
         this.discoveryListener = callback
         discoveredDevices.clear()
+        isScanning = true
         callback.onDiscoveryStarted()
 
         acquireMulticastLock()
@@ -58,11 +63,10 @@ class TvDiscoveryManager(private val context: Context) {
             }
         }
 
-        // 2. Run background subnet scan as a reliable fallback
-        scanJob?.cancel()
+        // 2. Fast parallel subnet scan (completes in ~1.5 seconds)
         scanJob = CoroutineScope(Dispatchers.IO).launch {
-            scanSubnet()
-            delay(4000)
+            scanSubnetParallel()
+            delay(1500)
             stopDiscovery()
         }
     }
@@ -87,44 +91,48 @@ class TvDiscoveryManager(private val context: Context) {
 
             override fun onServiceFound(serviceInfo: NsdServiceInfo?) {
                 if (serviceInfo == null) return
-                nsdManager.resolveService(serviceInfo, object : NsdManager.ResolveListener {
-                    override fun onResolveFailed(serviceInfo: NsdServiceInfo?, errorCode: Int) {
-                        Log.w(TAG, "Resolve failed: $errorCode")
-                    }
-
-                    override fun onServiceResolved(resolvedInfo: NsdServiceInfo?) {
-                        resolvedInfo?.let { info ->
-                            val host = info.host?.hostAddress ?: return@let
-                            val name = info.serviceName ?: "TCL TV"
-                            val port = info.port
-                            val serviceType = info.serviceType
-
-                            val type = when {
-                                serviceType.contains("roku", ignoreCase = true) -> TvType.ROKU_TV
-                                serviceType.contains("androidtv", ignoreCase = true) -> TvType.ANDROID_TV
-                                else -> TvType.ANDROID_TV
-                            }
-
-                            val device = TvDevice(
-                                name = name,
-                                ipAddress = host,
-                                port = port,
-                                type = type
-                            )
-                            addDevice(device)
+                try {
+                    nsdManager.resolveService(serviceInfo, object : NsdManager.ResolveListener {
+                        override fun onResolveFailed(serviceInfo: NsdServiceInfo?, errorCode: Int) {
+                            Log.w(TAG, "Resolve failed: $errorCode")
                         }
-                    }
-                })
+
+                        override fun onServiceResolved(resolvedInfo: NsdServiceInfo?) {
+                            resolvedInfo?.let { info ->
+                                val host = info.host?.hostAddress ?: return@let
+                                val name = info.serviceName ?: "TCL TV"
+                                val port = info.port
+                                val serviceType = info.serviceType ?: ""
+
+                                val type = when {
+                                    serviceType.contains("roku", ignoreCase = true) -> TvType.ROKU_TV
+                                    serviceType.contains("androidtv", ignoreCase = true) -> TvType.ANDROID_TV
+                                    else -> TvType.ANDROID_TV
+                                }
+
+                                val device = TvDevice(
+                                    name = name,
+                                    ipAddress = host,
+                                    port = port,
+                                    type = type
+                                )
+                                addDevice(device)
+                            }
+                        }
+                    })
+                } catch (e: Exception) {
+                    Log.e(TAG, "Resolve error: ${e.message}")
+                }
             }
 
             override fun onServiceLost(serviceInfo: NsdServiceInfo?) {}
         }
     }
 
-    private fun scanSubnet() {
+    private suspend fun scanSubnetParallel() = coroutineScope {
         try {
             val ip = wifiManager.connectionInfo.ipAddress
-            if (ip == 0) return
+            if (ip == 0) return@coroutineScope
 
             val prefix = String.format(
                 "%d.%d.%d.",
@@ -133,11 +141,13 @@ class TvDiscoveryManager(private val context: Context) {
                 ip shr 16 and 0xff
             )
 
-            // Scan common TV ports in local network
-            for (i in 1..254) {
-                val host = "$prefix$i"
-                checkHostForTv(host)
+            // Launch parallel quick checks
+            val jobs = (1..254).map { i ->
+                launch(Dispatchers.IO) {
+                    checkHostForTv("$prefix$i")
+                }
             }
+            jobs.joinAll()
         } catch (e: Exception) {
             Log.e(TAG, "Subnet scan error: ${e.message}")
         }
@@ -147,7 +157,7 @@ class TvDiscoveryManager(private val context: Context) {
         // Check Roku port (8060)
         try {
             Socket().use { socket ->
-                socket.connect(java.net.InetSocketAddress(host, 8060), 100)
+                socket.connect(InetSocketAddress(host, 8060), 120)
                 val device = TvDevice(
                     name = "TCL Roku TV ($host)",
                     ipAddress = host,
@@ -159,10 +169,10 @@ class TvDiscoveryManager(private val context: Context) {
             }
         } catch (_: Exception) {}
 
-        // Check Android TV Remote port (6466 or 6467)
+        // Check Android TV Remote port (6467 or 6466)
         try {
             Socket().use { socket ->
-                socket.connect(java.net.InetSocketAddress(host, 6467), 100)
+                socket.connect(InetSocketAddress(host, 6467), 120)
                 val device = TvDevice(
                     name = "TCL Android TV ($host)",
                     ipAddress = host,
@@ -185,6 +195,10 @@ class TvDiscoveryManager(private val context: Context) {
     }
 
     fun stopDiscovery() {
+        if (!isScanning) return
+        isScanning = false
+        scanJob?.cancel()
+
         nsdListeners.forEach { listener ->
             try {
                 nsdManager.stopServiceDiscovery(listener)

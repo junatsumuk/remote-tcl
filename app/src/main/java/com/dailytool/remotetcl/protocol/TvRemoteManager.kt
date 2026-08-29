@@ -95,4 +95,41 @@ class TvRemoteManager(private val context: Context) {
 
         return@withContext sent
     }
+
+    suspend fun sendText(text: String): Boolean = withContext(Dispatchers.IO) {
+        val device = currentDevice ?: return@withContext false
+        return@withContext when (device.type) {
+            TvType.ROKU_TV -> rokuProtocol.sendText(device, text)
+            TvType.ANDROID_TV, TvType.UNKNOWN -> {
+                var sent = androidTvProtocol.sendText(text)
+                if (!sent && androidTvProtocol.connect(device)) {
+                    sent = androidTvProtocol.sendText(text)
+                }
+                if (!sent) {
+                    sent = rokuProtocol.sendText(device, text)
+                }
+                sent
+            }
+        }
+    }
+
+    suspend fun sendBackspace(): Boolean = withContext(Dispatchers.IO) {
+        val device = currentDevice ?: return@withContext false
+        return@withContext when (device.type) {
+            TvType.ROKU_TV -> rokuProtocol.sendBackspace(device)
+            TvType.ANDROID_TV, TvType.UNKNOWN -> {
+                androidTvProtocol.sendKeyCode(AndroidTvProtocol.AndroidKeyCodes.KEYCODE_DEL)
+            }
+        }
+    }
+
+    suspend fun sendEnter(): Boolean = withContext(Dispatchers.IO) {
+        val device = currentDevice ?: return@withContext false
+        return@withContext when (device.type) {
+            TvType.ROKU_TV -> rokuProtocol.sendEnter(device)
+            TvType.ANDROID_TV, TvType.UNKNOWN -> {
+                androidTvProtocol.sendKeyCode(AndroidTvProtocol.AndroidKeyCodes.KEYCODE_ENTER)
+            }
+        }
+    }
 }
