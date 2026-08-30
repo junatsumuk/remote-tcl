@@ -149,6 +149,10 @@ class AndroidTvProtocol(private val context: Context) {
             socket.startHandshake()
             log.append("TLS Handshake Sukses! Cipher: ${socket.session.cipherSuite}\n")
 
+            // Diagnostik: apakah client cert berhasil dikirim via TLS?
+            val localCerts = socket.session.localCertificates
+            log.append("Client cert terkirim TLS: ${if (localCerts.isNullOrEmpty()) "TIDAK ← masalah!" else "Ya (${localCerts.size} cert)"}\n")
+
             pairingSocket = socket
 
             val certs = socket.session.peerCertificates

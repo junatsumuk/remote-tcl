@@ -21,7 +21,6 @@ import java.security.SecureRandom
 import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
 import java.util.Date
-import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
 import javax.net.ssl.TrustManager
 import javax.net.ssl.X509TrustManager
@@ -42,8 +41,26 @@ class KeyStoreHelper(private val context: Context) {
         if (sslContext != null) return sslContext!!
 
         val keyStore = loadOrCreateKeyStore()
-        val kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
-        kmf.init(keyStore, KEY_STORE_PASSWORD)
+
+        val cert = clientCertificate ?: error("Client certificate not loaded")
+        val privKey = keyStore.getKey("remote_client", KEY_STORE_PASSWORD) as java.security.PrivateKey
+
+        // Custom X509KeyManager: ALWAYS sends our client cert, ignoring server's issuer restrictions.
+        //
+        // WHY: Android's default KeyManagerFactory.chooseClientAlias() checks whether our cert
+        // is signed by one of the issuers in the TV's TLS CertificateRequest. Since our cert
+        // is self-signed, it often doesn't match → default KeyManager returns null → no cert sent.
+        // Without client cert in TLS, polo server can't compute PIN hash → STATUS_ERROR (400).
+        //
+        // FIX: Override chooseClientAlias() to always return our alias, forcing the cert to be sent.
+        val keyManager = object : javax.net.ssl.X509KeyManager {
+            override fun getClientAliases(keyType: String?, issuers: Array<java.security.Principal>?) = arrayOf("remote_client")
+            override fun chooseClientAlias(keyTypes: Array<String>?, issuers: Array<java.security.Principal>?, socket: java.net.Socket?) = "remote_client"
+            override fun getServerAliases(keyType: String?, issuers: Array<java.security.Principal>?) = null
+            override fun chooseServerAlias(keyType: String?, issuers: Array<java.security.Principal>?, socket: java.net.Socket?) = null
+            override fun getCertificateChain(alias: String?) = arrayOf(cert)
+            override fun getPrivateKey(alias: String?) = privKey
+        }
 
         val trustAllCerts = arrayOf<TrustManager>(object : X509TrustManager {
             override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
@@ -52,7 +69,7 @@ class KeyStoreHelper(private val context: Context) {
         })
 
         val sc = SSLContext.getInstance("TLS")
-        sc.init(kmf.keyManagers, trustAllCerts, SecureRandom())
+        sc.init(arrayOf(keyManager), trustAllCerts, SecureRandom())
         sslContext = sc
         return sc
     }
