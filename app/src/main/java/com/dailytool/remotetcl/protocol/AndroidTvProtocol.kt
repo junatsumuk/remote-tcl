@@ -421,8 +421,11 @@ class AndroidTvProtocol(private val context: Context) {
         throw IOException("Varint too long")
     }
 
-    // Step 1: PairingRequest (Clean Protobuf Request)
-    // Structure: [0x08, 0x02 (version: 2), 0x1A, len, inner [0x0A, len(service), service, 0x12, len(client), client]]
+    // Step 1: PairingRequest
+    // OuterMessage structure (polo.proto):
+    //   field 1 (0x08): protocol_version = 2
+    //   field 2 (0x10): status = STATUS_OK (200) — REQUIRED field, wajib ada di setiap packet client
+    //   field 3 (0x1A): pairing_request payload
     private fun buildPairingRequestPacket(serviceName: String = "atvremote", clientName: String = "Remote TCL"): ByteArray {
         val serviceBytes = serviceName.toByteArray(Charsets.UTF_8)
         val clientBytes = clientName.toByteArray(Charsets.UTF_8)
@@ -441,17 +444,17 @@ class AndroidTvProtocol(private val context: Context) {
         val innerBytes = inner.toByteArray()
 
         val outer = ByteArrayOutputStream()
-        outer.write(0x08); writeVarint(outer, 2) // protocol_version = 2
-        // Note: status (0x10) is omitted in request packets
-        outer.write(0x1A) // Tag 3: pairing_request
+        outer.write(0x08); writeVarint(outer, 2)   // field 1: protocol_version = 2
+        outer.write(0x10); writeVarint(outer, 200) // field 2: status = STATUS_OK (200) — REQUIRED
+        outer.write(0x1A)                          // field 3: pairing_request
         writeVarint(outer, innerBytes.size)
         outer.write(innerBytes)
 
         return outer.toByteArray()
     }
 
-    // Step 2: PairingOption (Clean Protobuf Request)
-    // Structure: [0x08, 0x02, 0x2A, len, inner [0x08, 0x01 (role: INPUT), 0x12, 0x04 (enc: [0x08, 0x03 (HEX), 0x10, 0x06])]]
+    // Step 2: PairingOption
+    // OuterMessage: protocol_version=2, status=STATUS_OK, field 5 (0x2A) = pairing_option payload
     private fun buildPairingOptionPacket(): ByteArray {
         val encoding = ByteArrayOutputStream()
         encoding.write(0x08); writeVarint(encoding, 3) // type: 3 (ENCODING_TYPE_HEXADECIMAL)
@@ -466,16 +469,17 @@ class AndroidTvProtocol(private val context: Context) {
         val innerBytes = inner.toByteArray()
 
         val outer = ByteArrayOutputStream()
-        outer.write(0x08); writeVarint(outer, 2) // protocol_version = 2
-        outer.write(0x2A) // Tag 5: pairing_option
+        outer.write(0x08); writeVarint(outer, 2)   // field 1: protocol_version = 2
+        outer.write(0x10); writeVarint(outer, 200) // field 2: status = STATUS_OK (200) — REQUIRED
+        outer.write(0x2A)                          // field 5: pairing_option
         writeVarint(outer, innerBytes.size)
         outer.write(innerBytes)
 
         return outer.toByteArray()
     }
 
-    // Step 3: PairingConfiguration (Clean Protobuf Request)
-    // Structure: [0x08, 0x02, 0x3A, len, inner [0x08, 0x01 (role: INPUT), 0x12, 0x04 (enc: [0x08, 0x03, 0x10, 0x06])]]
+    // Step 3: PairingConfiguration
+    // OuterMessage: protocol_version=2, status=STATUS_OK, field 7 (0x3A) = pairing_configuration payload
     private fun buildPairingConfigurationPacket(): ByteArray {
         val encoding = ByteArrayOutputStream()
         encoding.write(0x08); writeVarint(encoding, 3) // type: 3 (HEXADECIMAL)
@@ -490,16 +494,17 @@ class AndroidTvProtocol(private val context: Context) {
         val innerBytes = inner.toByteArray()
 
         val outer = ByteArrayOutputStream()
-        outer.write(0x08); writeVarint(outer, 2) // protocol_version = 2
-        outer.write(0x3A) // Tag 7: pairing_configuration
+        outer.write(0x08); writeVarint(outer, 2)   // field 1: protocol_version = 2
+        outer.write(0x10); writeVarint(outer, 200) // field 2: status = STATUS_OK (200) — REQUIRED
+        outer.write(0x3A)                          // field 7: pairing_configuration
         writeVarint(outer, innerBytes.size)
         outer.write(innerBytes)
 
         return outer.toByteArray()
     }
 
-    // Step 4: PairingSecret (Clean Protobuf Request)
-    // Structure: [0x08, 0x02, 0x4A, len, inner [0x0A, 0x20, 32 bytes SHA256]]
+    // Step 4: PairingSecret
+    // OuterMessage: protocol_version=2, status=STATUS_OK, field 9 (0x4A) = pairing_secret payload
     private fun buildPairingSecretPacket(secret: ByteArray): ByteArray {
         val inner = ByteArrayOutputStream()
         inner.write(0x0A) // Tag 1: secret
@@ -508,8 +513,9 @@ class AndroidTvProtocol(private val context: Context) {
         val innerBytes = inner.toByteArray()
 
         val outer = ByteArrayOutputStream()
-        outer.write(0x08); writeVarint(outer, 2) // protocol_version = 2
-        outer.write(0x4A) // Tag 9: pairing_secret
+        outer.write(0x08); writeVarint(outer, 2)   // field 1: protocol_version = 2
+        outer.write(0x10); writeVarint(outer, 200) // field 2: status = STATUS_OK (200) — REQUIRED
+        outer.write(0x4A)                          // field 9: pairing_secret
         writeVarint(outer, innerBytes.size)
         outer.write(innerBytes)
 
