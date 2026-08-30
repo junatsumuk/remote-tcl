@@ -135,60 +135,66 @@ class AndroidTvProtocol(private val context: Context) {
         }
         log.append("Port Terbuka di TV: ${if (openPorts.isEmpty()) "Tidak ada" else openPorts.joinToString(", ")}\n")
 
-        // Try standard pairing requests (without invalid status=200 in request)
-        val candidateNames = listOf("Remote TCL", "atvremote", device.name, "")
+        // 2. Attempt pairing using correct polo.proto structure
+        // OuterMessage: protocol_version(1)=2, status(2)=200, type(3)=varint, payload(4)=bytes
+        try {
+            disconnect()
+            log.append("\n--- Inisialisasi Pairing ---\n")
+            val sslContext = keyStoreHelper.getSslContext()
+            val socket = sslContext.socketFactory.createSocket() as SSLSocket
+            socket.soTimeout = 10000
+            socket.useClientMode = true
 
-        for (clientName in candidateNames) {
-            try {
-                disconnect()
-                log.append("\n--- Inisialisasi Pairing (Client Name: \"$clientName\") ---\n")
-                val sslContext = keyStoreHelper.getSslContext()
-                val socket = sslContext.socketFactory.createSocket() as SSLSocket
-                socket.soTimeout = 10000
-                socket.useClientMode = true
+            socket.connect(InetSocketAddress(targetIp, 6467), 5000)
+            socket.startHandshake()
+            log.append("TLS Handshake Sukses! Cipher: ${socket.session.cipherSuite}\n")
 
-                socket.connect(InetSocketAddress(targetIp, 6467), 5000)
-                socket.startHandshake()
-                log.append("TLS Handshake Sukses! Cipher: ${socket.session.cipherSuite}\n")
+            pairingSocket = socket
 
-                pairingSocket = socket
+            val certs = socket.session.peerCertificates
+            if (certs.isNotEmpty() && certs[0] is X509Certificate) {
+                serverCert = certs[0] as X509Certificate
+                log.append("Sertifikat TV: ${serverCert?.subjectDN}\n")
+            }
 
-                val certs = socket.session.peerCertificates
-                if (certs.isNotEmpty() && certs[0] is X509Certificate) {
-                    serverCert = certs[0] as X509Certificate
-                    log.append("Sertifikat TV: ${serverCert?.subjectDN}\n")
-                }
+            val out = socket.outputStream
+            val input = socket.inputStream
 
-                val out = socket.outputStream
-                val input = socket.inputStream
+            // Step 1: PairingRequest
+            // Polo OuterMessage: version=2, status=200, type=10 (varint), payload=PairingRequest bytes
+            log.append("Mengirim PairingRequest...\n")
+            val pairingReq = buildPairingRequestPacket(clientName = "Remote TCL")
+            log.append("  TX bytes: ${bytesToHex(pairingReq)}\n")
+            sendPacket(out, pairingReq)
 
-                // Step 1: Send PairingRequest (Clean request: protocol_version: 2, pairing_request)
-                log.append("Mengirim PairingRequest...\n")
-                val pairingReq = buildPairingRequestPacket(clientName = clientName)
-                sendPacket(out, pairingReq)
+            val ack1 = readPacket(input)
+            val status1 = extractStatus(ack1)
+            log.append("Menerima PairingRequestAck (${ack1.size} bytes: ${bytesToHex(ack1)}) -> Status: $status1\n")
 
-                val ack1 = readPacket(input)
-                val status1 = extractStatus(ack1)
-                log.append("Menerima PairingRequestAck (${ack1.size} bytes: ${bytesToHex(ack1)}) -> Status: $status1\n")
-
-                if (status1 != 200 && status1 != 0) {
-                    log.append("Status $status1 diterima, mencoba variasi request berikutnya...\n")
-                    socket.close()
-                    continue
-                }
-
-                // Step 2: Send PairingOption (ROLE_TYPE_INPUT, ENCODING_TYPE_HEXADECIMAL 6)
+            if (status1 == 400) {
+                log.append("STATUS_ERROR (400): TV menolak request pairing.\n")
+                log.append("Kemungkinan TV belum dalam mode pairing.\n")
+                log.append("→ Coba: Settings TV → Remote & Accessories → + Add Remote\n")
+                log.append("→ Lalu tekan tombol Pairing di app ini lagi.\n")
+                socket.close()
+            } else if (status1 != 200 && status1 != 0) {
+                log.append("Status tidak diharapkan: $status1\n")
+                socket.close()
+            } else {
+                // Step 2: PairingOption
                 log.append("Mengirim PairingOption (HEXADECIMAL 6 chars)...\n")
                 val pairingOption = buildPairingOptionPacket()
+                log.append("  TX bytes: ${bytesToHex(pairingOption)}\n")
                 sendPacket(out, pairingOption)
 
                 val ack2 = readPacket(input)
                 val status2 = extractStatus(ack2)
                 log.append("Menerima PairingOptionAck (${ack2.size} bytes: ${bytesToHex(ack2)}) -> Status: $status2\n")
 
-                // Step 3: Send PairingConfiguration
+                // Step 3: PairingConfiguration
                 log.append("Mengirim PairingConfiguration...\n")
                 val pairingConfig = buildPairingConfigurationPacket()
+                log.append("  TX bytes: ${bytesToHex(pairingConfig)}\n")
                 sendPacket(out, pairingConfig)
 
                 val ack3 = readPacket(input)
@@ -202,15 +208,13 @@ class AndroidTvProtocol(private val context: Context) {
                     diagnosticLog = log.toString(),
                     openPorts = openPorts
                 )
-            } catch (e: Exception) {
-                val sw = StringWriter()
-                e.printStackTrace(PrintWriter(sw))
-                log.append("Error saat mencoba \"$clientName\": ${e.javaClass.simpleName} (${e.message})\n")
-                try {
-                    pairingSocket?.close()
-                } catch (_: Exception) {}
-                pairingSocket = null
             }
+        } catch (e: Exception) {
+            val sw = StringWriter()
+            e.printStackTrace(PrintWriter(sw))
+            log.append("Error: ${e.javaClass.simpleName} - ${e.message}\n")
+            try { pairingSocket?.close() } catch (_: Exception) {}
+            pairingSocket = null
         }
 
         return@withContext PairingResult(
@@ -421,105 +425,88 @@ class AndroidTvProtocol(private val context: Context) {
         throw IOException("Varint too long")
     }
 
-    // Step 1: PairingRequest
-    // OuterMessage structure (polo.proto):
-    //   field 1 (0x08): protocol_version = 2
-    //   field 2 (0x10): status = STATUS_OK (200) — REQUIRED field, wajib ada di setiap packet client
-    //   field 3 (0x1A): pairing_request payload
+    // ═══════════════════════════════════════════════════════════════
+    // Polo Protocol Packet Builders
+    // Reference: polo.proto (google-tv-pairing-protocol)
+    //
+    // OuterMessage structure:
+    //   field 1 (0x08, varint)  : protocol_version = 2  [required]
+    //   field 2 (0x10, varint)  : status = STATUS_OK (200)  [required]
+    //   field 3 (0x18, varint)  : type = MessageType enum  [optional]  ← VARINT, bukan submessage!
+    //   field 4 (0x22, bytes)   : payload = serialized inner message  [optional]
+    //
+    // MessageType enum values:
+    //   10 = MESSAGE_TYPE_PAIRING_REQUEST
+    //   20 = MESSAGE_TYPE_OPTIONS
+    //   30 = MESSAGE_TYPE_CONFIGURATION
+    //   40 = MESSAGE_TYPE_SECRET
+    // ═══════════════════════════════════════════════════════════════
+
+    // Helper: Encoding submessage (HEXADECIMAL type=3, symbol_length=6)
+    // polo.proto Options.Encoding: type(1), symbol_length(2)
+    private fun buildEncodingBytes(): ByteArray {
+        val out = ByteArrayOutputStream()
+        out.write(0x08); writeVarint(out, 3)  // field 1: type = ENCODING_TYPE_HEXADECIMAL (3)
+        out.write(0x10); writeVarint(out, 6)  // field 2: symbol_length = 6
+        return out.toByteArray()
+    }
+
+    // Helper: Wrap payload in polo OuterMessage
+    // protocol_version(1)=2, status(2)=200, type(3)=messageType, payload(4)=data
+    private fun wrapOuter(messageType: Int, payload: ByteArray): ByteArray {
+        val out = ByteArrayOutputStream()
+        out.write(0x08); writeVarint(out, 2)              // field 1: protocol_version = 2
+        out.write(0x10); writeVarint(out, 200)            // field 2: status = STATUS_OK (200)
+        out.write(0x18); writeVarint(out, messageType)    // field 3: type (varint enum) ← KUNCI FIX
+        out.write(0x22); writeVarint(out, payload.size)   // field 4: payload (bytes)
+        out.write(payload)
+        return out.toByteArray()
+    }
+
+    // Step 1: PairingRequest — type=10
+    // PairingRequest inner: service_name(1)=required, client_name(2)=optional
     private fun buildPairingRequestPacket(serviceName: String = "atvremote", clientName: String = "Remote TCL"): ByteArray {
-        val serviceBytes = serviceName.toByteArray(Charsets.UTF_8)
-        val clientBytes = clientName.toByteArray(Charsets.UTF_8)
-
-        val inner = ByteArrayOutputStream()
-        if (serviceBytes.isNotEmpty()) {
-            inner.write(0x0A) // Tag 1: service_name
-            writeVarint(inner, serviceBytes.size)
-            inner.write(serviceBytes)
+        val svcBytes = serviceName.toByteArray(Charsets.UTF_8)
+        val cliBytes = clientName.toByteArray(Charsets.UTF_8)
+        val payload = ByteArrayOutputStream()
+        if (svcBytes.isNotEmpty()) {
+            payload.write(0x0A); writeVarint(payload, svcBytes.size); payload.write(svcBytes)
         }
-
-        inner.write(0x12) // Tag 2: client_name
-        writeVarint(inner, clientBytes.size)
-        inner.write(clientBytes)
-
-        val innerBytes = inner.toByteArray()
-
-        val outer = ByteArrayOutputStream()
-        outer.write(0x08); writeVarint(outer, 2)   // field 1: protocol_version = 2
-        outer.write(0x10); writeVarint(outer, 200) // field 2: status = STATUS_OK (200) — REQUIRED
-        outer.write(0x1A)                          // field 3: pairing_request
-        writeVarint(outer, innerBytes.size)
-        outer.write(innerBytes)
-
-        return outer.toByteArray()
+        payload.write(0x12); writeVarint(payload, cliBytes.size); payload.write(cliBytes)
+        return wrapOuter(10, payload.toByteArray())
     }
 
-    // Step 2: PairingOption
-    // OuterMessage: protocol_version=2, status=STATUS_OK, field 5 (0x2A) = pairing_option payload
+    // Step 2: Options — type=20
+    // Options inner (polo.proto):
+    //   field 1 (0x0A, length-delimited) : input_encodings (repeated Encoding message)
+    //   field 2 (0x12, length-delimited) : output_encodings (repeated Encoding, omitted)
+    //   field 3 (0x18, varint)           : preferred_role = ROLE_TYPE_INPUT (1)
     private fun buildPairingOptionPacket(): ByteArray {
-        val encoding = ByteArrayOutputStream()
-        encoding.write(0x08); writeVarint(encoding, 3) // type: 3 (ENCODING_TYPE_HEXADECIMAL)
-        encoding.write(0x10); writeVarint(encoding, 6) // symbol_length: 6
-        val encodingBytes = encoding.toByteArray()
-
-        val inner = ByteArrayOutputStream()
-        inner.write(0x08); writeVarint(inner, 1) // preferred_role: 1 (ROLE_TYPE_INPUT)
-        inner.write(0x12) // Tag 2: input_encodings
-        writeVarint(inner, encodingBytes.size)
-        inner.write(encodingBytes)
-        val innerBytes = inner.toByteArray()
-
-        val outer = ByteArrayOutputStream()
-        outer.write(0x08); writeVarint(outer, 2)   // field 1: protocol_version = 2
-        outer.write(0x10); writeVarint(outer, 200) // field 2: status = STATUS_OK (200) — REQUIRED
-        outer.write(0x2A)                          // field 5: pairing_option
-        writeVarint(outer, innerBytes.size)
-        outer.write(innerBytes)
-
-        return outer.toByteArray()
+        val enc = buildEncodingBytes()
+        val payload = ByteArrayOutputStream()
+        payload.write(0x0A); writeVarint(payload, enc.size); payload.write(enc) // field 1: input_encodings
+        payload.write(0x18); writeVarint(payload, 1)                             // field 3: preferred_role = INPUT
+        return wrapOuter(20, payload.toByteArray())
     }
 
-    // Step 3: PairingConfiguration
-    // OuterMessage: protocol_version=2, status=STATUS_OK, field 7 (0x3A) = pairing_configuration payload
+    // Step 3: Configuration — type=30
+    // Configuration inner (polo.proto):
+    //   field 1 (0x0A, length-delimited) : encoding (Options.Encoding message)
+    //   field 2 (0x10, varint)           : client_role = ROLE_TYPE_INPUT (1)
     private fun buildPairingConfigurationPacket(): ByteArray {
-        val encoding = ByteArrayOutputStream()
-        encoding.write(0x08); writeVarint(encoding, 3) // type: 3 (HEXADECIMAL)
-        encoding.write(0x10); writeVarint(encoding, 6) // symbol_length: 6
-        val encodingBytes = encoding.toByteArray()
-
-        val inner = ByteArrayOutputStream()
-        inner.write(0x08); writeVarint(inner, 1) // client_role: 1
-        inner.write(0x12) // Tag 2: encoding
-        writeVarint(inner, encodingBytes.size)
-        inner.write(encodingBytes)
-        val innerBytes = inner.toByteArray()
-
-        val outer = ByteArrayOutputStream()
-        outer.write(0x08); writeVarint(outer, 2)   // field 1: protocol_version = 2
-        outer.write(0x10); writeVarint(outer, 200) // field 2: status = STATUS_OK (200) — REQUIRED
-        outer.write(0x3A)                          // field 7: pairing_configuration
-        writeVarint(outer, innerBytes.size)
-        outer.write(innerBytes)
-
-        return outer.toByteArray()
+        val enc = buildEncodingBytes()
+        val payload = ByteArrayOutputStream()
+        payload.write(0x0A); writeVarint(payload, enc.size); payload.write(enc) // field 1: encoding
+        payload.write(0x10); writeVarint(payload, 1)                             // field 2: client_role = INPUT
+        return wrapOuter(30, payload.toByteArray())
     }
 
-    // Step 4: PairingSecret
-    // OuterMessage: protocol_version=2, status=STATUS_OK, field 9 (0x4A) = pairing_secret payload
+    // Step 4: Secret — type=40
+    // Secret inner (polo.proto): secret(1)=required bytes (SHA-256 hash)
     private fun buildPairingSecretPacket(secret: ByteArray): ByteArray {
-        val inner = ByteArrayOutputStream()
-        inner.write(0x0A) // Tag 1: secret
-        writeVarint(inner, secret.size)
-        inner.write(secret)
-        val innerBytes = inner.toByteArray()
-
-        val outer = ByteArrayOutputStream()
-        outer.write(0x08); writeVarint(outer, 2)   // field 1: protocol_version = 2
-        outer.write(0x10); writeVarint(outer, 200) // field 2: status = STATUS_OK (200) — REQUIRED
-        outer.write(0x4A)                          // field 9: pairing_secret
-        writeVarint(outer, innerBytes.size)
-        outer.write(innerBytes)
-
-        return outer.toByteArray()
+        val payload = ByteArrayOutputStream()
+        payload.write(0x0A); writeVarint(payload, secret.size); payload.write(secret)
+        return wrapOuter(40, payload.toByteArray())
     }
 
     fun disconnect() {
