@@ -123,13 +123,23 @@ class KeyStoreHelper(private val context: Context) {
         return keyStore
     }
 
+    // Hapus cert yang tersimpan agar cert baru di-generate pada getSslContext() berikutnya.
+    // Gunakan jika TV kemungkinan memblacklist cert lama dari percobaan gagal sebelumnya.
+    fun resetCertificate() {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().clear().apply()
+        clientCertificate = null
+        sslContext = null
+        Log.d(TAG, "Certificate reset — cert baru akan di-generate")
+    }
+
     private fun generateSelfSignedCertificate(keyPair: KeyPair): X509Certificate {
         val now = System.currentTimeMillis()
         val startDate = Date(now - 86400000L) // Yesterday
         val endDate = Date(now + 15L * 365 * 86400000L) // 15 years
 
-        // Google TV Remote v2 expects CN=atvremote or similar
-        val dnName = X500Name("CN=atvremote, O=Google, C=US")
+        // CN harus BERBEDA dari service name TV ("atvremote") untuk menghindari penolakan karena
+        // TV mengira client mencoba impersonasi dirinya sendiri.
+        val dnName = X500Name("CN=RemoteTCL, O=Android, C=US")
         val serialNumber = BigInteger.valueOf(now)
 
         val contentSigner = JcaContentSignerBuilder("SHA256WithRSA").build(keyPair.private)

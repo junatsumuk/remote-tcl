@@ -135,8 +135,12 @@ class AndroidTvProtocol(private val context: Context) {
         }
         log.append("Port Terbuka di TV: ${if (openPorts.isEmpty()) "Tidak ada" else openPorts.joinToString(", ")}\n")
 
-        // 2. Attempt pairing using correct polo.proto structure
-        // OuterMessage: protocol_version(1)=2, status(2)=200, type(3)=varint, payload(4)=bytes
+        // 2. Reset cert lama — generate cert baru setiap percobaan pairing
+        // Tujuan: menghilangkan kemungkinan TV memblacklist cert dari percobaan gagal sebelumnya
+        keyStoreHelper.resetCertificate()
+        log.append("Cert direset — cert baru akan digunakan.\n")
+
+        // 3. Attempt pairing
         try {
             disconnect()
             log.append("\n--- Inisialisasi Pairing ---\n")
@@ -149,7 +153,6 @@ class AndroidTvProtocol(private val context: Context) {
             socket.startHandshake()
             log.append("TLS Handshake Sukses! Cipher: ${socket.session.cipherSuite}\n")
 
-            // Diagnostik: apakah client cert berhasil dikirim via TLS?
             val localCerts = socket.session.localCertificates
             log.append("Client cert terkirim TLS: ${if (localCerts.isNullOrEmpty()) "TIDAK ← masalah!" else "Ya (${localCerts.size} cert)"}\n")
 
@@ -164,8 +167,35 @@ class AndroidTvProtocol(private val context: Context) {
             val out = socket.outputStream
             val input = socket.inputStream
 
-            // Step 1: PairingRequest
-            // Polo OuterMessage: version=2, status=200, type=10 (varint), payload=PairingRequest bytes
+            // 4. EARLY MESSAGE CHECK: Baca dari TV SEBELUM kita kirim apapun
+            // Jika TV mengirim STATUS_ERROR sebelum kita kirim PairingRequest,
+            // berarti penolakan bukan karena isi packet kita — TV menolak di level koneksi.
+            log.append("\n--- Cek Pesan Awal dari TV ---\n")
+            socket.soTimeout = 2000  // Timeout pendek — kalau TV diam, lanjut normal
+            var tvSpeaksFirst = false
+            try {
+                val earlyMsg = readPacket(input)
+                val earlyStatus = extractStatus(earlyMsg)
+                tvSpeaksFirst = true
+                log.append("TV mengirim SEBELUM kita kirim apapun!\n")
+                log.append("  Bytes: ${bytesToHex(earlyMsg)} → Status: $earlyStatus\n")
+                if (earlyStatus == 400) {
+                    log.append("  → TV menolak koneksi di level TLS/service, bukan karena isi polo request.\n")
+                    log.append("  → Kemungkinan: TV membatasi akses berdasarkan IP atau sudah ada sesi aktif.\n")
+                }
+            } catch (_: java.net.SocketTimeoutException) {
+                log.append("TV menunggu kita kirim dulu (tidak ada pesan awal) — normal.\n")
+            } finally {
+                socket.soTimeout = 10000
+            }
+
+            if (tvSpeaksFirst) {
+                // TV sudah kirim sesuatu sebelum kita. Lanjut quand meme — kirim PairingRequest
+                log.append("Melanjutkan kirim PairingRequest meski ada pesan awal...\n")
+            }
+
+            // 5. PairingRequest
+            log.append("\n--- Polo Pairing ---\n")
             log.append("Mengirim PairingRequest...\n")
             val pairingReq = buildPairingRequestPacket(clientName = "Remote TCL")
             log.append("  TX bytes: ${bytesToHex(pairingReq)}\n")
@@ -177,9 +207,13 @@ class AndroidTvProtocol(private val context: Context) {
 
             if (status1 == 400) {
                 log.append("STATUS_ERROR (400): TV menolak request pairing.\n")
-                log.append("Kemungkinan TV belum dalam mode pairing.\n")
-                log.append("→ Coba: Settings TV → Remote & Accessories → + Add Remote\n")
-                log.append("→ Lalu tekan tombol Pairing di app ini lagi.\n")
+                if (!tvSpeaksFirst) {
+                    log.append("TV diam duluan → penolakan ini karena isi polo request.\n")
+                    log.append("Kemungkinan penyebab:\n")
+                    log.append("  1. TV bukan Android TV (gunakan protokol lain)\n")
+                    log.append("  2. Service 'atvremote' tidak terdaftar di TV\n")
+                    log.append("  3. Bug di polo message format\n")
+                }
                 socket.close()
             } else if (status1 != 200 && status1 != 0) {
                 log.append("Status tidak diharapkan: $status1\n")
